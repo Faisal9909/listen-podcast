@@ -34,7 +34,7 @@ HERE = Path(__file__).resolve().parent
 OUT_DIR = Path(os.environ.get("OUT_DIR", "_site"))
 
 VOICE_AR = os.environ.get("VOICE_AR") or "ar-SA-HamedNeural"
-VOICE_EN = os.environ.get("VOICE_EN") or "en-US-AndrewMultilingualNeural"
+VOICE_EN = os.environ.get("VOICE_EN") or "en-US-AndrewNeural"
 RATE = os.environ.get("TTS_RATE") or "+0%"
 MAX_EPISODES = int(os.environ.get("MAX_EPISODES") or 60)
 PODCAST_TITLE = os.environ.get("PODCAST_TITLE") or "استمع — نصائحي اليومية"
@@ -211,8 +211,9 @@ def parse_message(raw, fallback_id=""):
 # ---------------------------------------------------------------- speech
 
 
-CHUNK_CHARS = 2500
-CHUNK_TIMEOUT_SECONDS = 120
+CHUNK_CHARS = 2000
+CHUNK_TIMEOUT_SECONDS = 240
+PARALLEL_CHUNKS = 4
 
 
 def split_chunks(text, limit=CHUNK_CHARS):
@@ -242,27 +243,32 @@ async def _synthesize_chunk(text, voice):
     async for event in edge_tts.Communicate(text, voice, rate=RATE).stream():
         if event["type"] == "audio":
             audio.extend(event["data"])
+    if not audio:
+        raise RuntimeError("empty audio")
     return bytes(audio)
 
 
-def synthesize(text, path, voice):
-    chunks = split_chunks(text)
-    audio = bytearray()
-    for index, chunk in enumerate(chunks, 1):
-        for attempt in range(1, 4):
-            try:
-                data = asyncio.run(asyncio.wait_for(_synthesize_chunk(chunk, voice), CHUNK_TIMEOUT_SECONDS))
-                if not data:
-                    raise RuntimeError("empty audio")
-                audio.extend(data)
-                log(f"  chunk {index}/{len(chunks)} done")
-                break
-            except Exception as exc:  # noqa: BLE001 - edge-tts raises several types
-                log(f"  chunk {index}/{len(chunks)} attempt {attempt} failed: {type(exc).__name__}")
-                time.sleep(5 * attempt)
-        else:
+async def _synthesize_all(chunks, voice):
+    gate = asyncio.Semaphore(PARALLEL_CHUNKS)
+
+    async def one(index, chunk):
+        async with gate:
+            for attempt in range(1, 4):
+                try:
+                    data = await asyncio.wait_for(_synthesize_chunk(chunk, voice), CHUNK_TIMEOUT_SECONDS)
+                    log(f"  chunk {index}/{len(chunks)} done")
+                    return data
+                except Exception as exc:  # noqa: BLE001 - edge-tts raises several types
+                    log(f"  chunk {index}/{len(chunks)} attempt {attempt} failed: {type(exc).__name__}")
+                    await asyncio.sleep(5 * attempt)
             raise RuntimeError("TTS failed after 3 attempts")
-    path.write_bytes(audio)
+
+    return await asyncio.gather(*(one(i, c) for i, c in enumerate(chunks, 1)))
+
+
+def synthesize(text, path, voice):
+    parts = asyncio.run(_synthesize_all(split_chunks(text), voice))
+    path.write_bytes(b"".join(parts))
 
 
 # ---------------------------------------------------------------- site

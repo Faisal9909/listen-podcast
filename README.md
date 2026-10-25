@@ -21,7 +21,7 @@
 |---|---|
 | `GMAIL_QUERY` | `to:اسمك+listen@gmail.com newer_than:30d` (أي بحث Gmail بحروف إنجليزية، مثل `from:x@y.com` أو `label:listen`) |
 | `VOICE_AR` | `ar-SA-HamedNeural` (أو `ar-SA-ZariyahNeural` لصوت أنثوي) |
-| `VOICE_EN` | `en-US-AndrewMultilingualNeural` |
+| `VOICE_EN` | `en-US-AndrewNeural` |
 | `TTS_RATE` | `+0%` (مثلًا `+10%` للتسريع) |
 
 ملاحظة: سجلات Actions في الريبو العام مكشوفة، لذلك السكربت لا يطبع محتوى الرسائل أبدًا. والرابط السري يحمي الحلقات من التخمين، لكن من يحصل عليه يقدر يسمعها.
