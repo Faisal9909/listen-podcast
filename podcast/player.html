@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="apple-touch-icon" href="cover.png">
+<link rel="alternate" type="application/rss+xml" href="feed.xml">
+<title>{{TITLE}}</title>
+<style>
+  :root { --bg: #f6f4ef; --card: #fff; --text: #1d1b18; --muted: #77716a; --accent: #2f6f5e; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #141312; --card: #1f1d1b; --text: #f1ede6; --muted: #a59e95; --accent: #6fc2a8; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 17px/1.7 -apple-system, "SF Arabic", "Segoe UI", Tahoma, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 26px; margin: 8px 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .add { display: block; text-align: center; background: var(--accent); color: #fff; text-decoration: none;
+         padding: 14px; border-radius: 14px; font-weight: 600; margin-bottom: 8px; }
+  .feed { font-size: 13px; color: var(--muted); word-break: break-all; direction: ltr; text-align: left; margin-bottom: 24px; }
+  article { background: var(--card); border-radius: 16px; padding: 16px; margin-bottom: 14px; }
+  article h2 { font-size: 18px; margin: 0; }
+  .meta { color: var(--muted); font-size: 14px; margin: 2px 0 10px; }
+  audio { width: 100%; }
+  details { margin-top: 8px; color: var(--muted); }
+  details p { color: var(--text); }
+</style>
+</head>
+<body>
+<main>
+  <h1>{{TITLE}}</h1>
+  <p class="sub">رسائلك اليومية بصوت مسموع.</p>
+  <a class="add" href="podcast://{{FEED_HOST}}/feed.xml">إضافة إلى تطبيق Podcasts</a>
+  <p class="feed">{{FEED_URL}}</p>
+{{EPISODES}}
+</main>
+</body>
+</html>
