@@ -138,7 +138,7 @@ def gmail_query():
     if query:
         return query
     local, _, domain = os.environ["GMAIL_ADDRESS"].partition("@")
-    return f"deliveredto:{local}+listen@{domain} newer_than:30d"
+    return f"to:{local}+listen@{domain} newer_than:30d"
 
 
 def _all_mail_folder(conn):
