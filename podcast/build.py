@@ -83,12 +83,30 @@ def html_to_text(markup):
     return html.unescape("".join(parser.parts))
 
 
+FORWARD_MARKER = re.compile(r"^-{3,}.*(forwarded message|رسالة مُعاد توجيهها|رسالة معاد توجيهها).*-{3,}$", re.I)
+FORWARD_HEADER = re.compile(r"^(from|date|sent|subject|to|cc|من|التاريخ|الموضوع|إلى|نسخة)\s*:", re.I)
+SUBJECT_PREFIX = re.compile(r"^\s*((fwd?|re|إعادة توجيه|رد)\s*:\s*)+", re.I)
+
+
+def clean_subject(subject):
+    return SUBJECT_PREFIX.sub("", subject).strip()
+
+
 def clean_for_speech(text):
     """Strip things a listener should not hear: links, markdown symbols, footers."""
     text = text.replace("\r\n", "\n")
     lines = []
+    in_forward_header = False
     for line in text.split("\n"):
         line = line.strip()
+        if FORWARD_MARKER.match(line):
+            in_forward_header = True
+            continue
+        if in_forward_header:
+            if not line or FORWARD_HEADER.match(line):
+                in_forward_header = bool(line)
+                continue
+            in_forward_header = False
         if re.match(r"^(>|--\s*$|unsubscribe|إلغاء الاشتراك|sent from my)", line, re.I):
             if line.startswith("--"):
                 break  # signature block
@@ -184,7 +202,7 @@ def parse_message(raw, fallback_id=""):
     message_id = (msg.get("Message-ID") or fallback_id).strip()
     return {
         "id": hashlib.sha1(message_id.encode()).hexdigest()[:16],
-        "title": str(msg.get("Subject") or "بدون عنوان").strip(),
+        "title": clean_subject(str(msg.get("Subject") or "")) or "بدون عنوان",
         "text": clean_for_speech(text),
         "date": sent.isoformat(),
     }
