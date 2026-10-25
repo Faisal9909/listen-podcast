@@ -8,6 +8,9 @@ on:
       test_text:
         description: "نص تجريبي يتحول إلى حلقة (اختياري)"
         required: false
+      sample_voices:
+        description: "أصوات للمقارنة مفصولة بفواصل (اختياري)، مثل en-US-AvaMultilingualNeural,google:en-US-Chirp3-HD-Charon"
+        required: false
 
 permissions:
   contents: read
@@ -51,6 +54,8 @@ jobs:
           VOICE_EN: ${{ vars.VOICE_EN }}
           TTS_RATE: ${{ vars.TTS_RATE }}
           TEST_TEXT: ${{ inputs.test_text }}
+          SAMPLE_VOICES: ${{ inputs.sample_voices }}
+          GOOGLE_TTS_KEY: ${{ secrets.GOOGLE_TTS_KEY }}
 
       - if: steps.build.outputs.changed == 'true'
         uses: actions/upload-pages-artifact@v3

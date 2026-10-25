@@ -11,6 +11,7 @@ The episodes live under a secret path (FEED_TOKEN) that never appears in the rep
 """
 
 import asyncio
+import base64
 import email
 import email.policy
 import email.utils
@@ -39,8 +40,8 @@ RATE = os.environ.get("TTS_RATE") or "+0%"
 MAX_EPISODES = int(os.environ.get("MAX_EPISODES") or 60)
 PODCAST_TITLE = os.environ.get("PODCAST_TITLE") or "استمع — نصائحي اليومية"
 
-# edge-tts output format: audio-24khz-48kbitrate-mono-mp3
-MP3_BYTES_PER_SECOND = 48000 / 8
+GOOGLE_TTS_KEY = os.environ.get("GOOGLE_TTS_KEY", "").strip()
+GOOGLE_TTS_URL = "https://texttospeech.googleapis.com/v1/text:synthesize"
 
 
 def log(msg):
@@ -236,7 +237,31 @@ def split_chunks(text, limit=CHUNK_CHARS):
     return chunks
 
 
+def _google_chunk(text, voice):
+    """voice looks like "google:en-US-Chirp3-HD-Charon"."""
+    if not GOOGLE_TTS_KEY:
+        raise RuntimeError("GOOGLE_TTS_KEY is not set")
+    name = voice.split(":", 1)[1]
+    body = json.dumps({
+        "input": {"text": text},
+        "voice": {"languageCode": "-".join(name.split("-")[:2]), "name": name},
+        "audioConfig": {"audioEncoding": "MP3", "sampleRateHertz": 24000},
+    }).encode()
+    req = urllib.request.Request(
+        f"{GOOGLE_TTS_URL}?key={GOOGLE_TTS_KEY}", data=body, headers={"Content-Type": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=CHUNK_TIMEOUT_SECONDS) as res:
+            return base64.b64decode(json.load(res)["audioContent"])
+    except urllib.error.HTTPError as exc:
+        # Google's error body names the problem (API disabled, bad voice, billing) and holds no secrets.
+        raise RuntimeError(f"Google TTS {exc.code}: {exc.read()[:300].decode(errors='replace')}") from None
+
+
 async def _synthesize_chunk(text, voice):
+    if voice.startswith("google:"):
+        return await asyncio.to_thread(_google_chunk, text, voice)
+
     import edge_tts
 
     audio = bytearray()
@@ -259,7 +284,7 @@ async def _synthesize_all(chunks, voice):
                     log(f"  chunk {index}/{len(chunks)} done")
                     return data
                 except Exception as exc:  # noqa: BLE001 - edge-tts raises several types
-                    log(f"  chunk {index}/{len(chunks)} attempt {attempt} failed: {type(exc).__name__}")
+                    log(f"  chunk {index}/{len(chunks)} attempt {attempt} failed: {type(exc).__name__} {exc}"[:400])
                     await asyncio.sleep(5 * attempt)
             raise RuntimeError("TTS failed after 3 attempts")
 
@@ -343,6 +368,15 @@ def write_player(episodes, base_url, path):
     path.write_text(page, encoding="utf-8")
 
 
+def mp3_seconds(path):
+    from mutagen.mp3 import MP3, HeaderNotFoundError
+
+    try:
+        return round(MP3(path).info.length)
+    except HeaderNotFoundError:
+        return round(path.stat().st_size / 6000)  # edge-tts default: 48 kbps
+
+
 def set_output(name, value):
     out = os.environ.get("GITHUB_OUTPUT")
     if out:
@@ -364,13 +398,18 @@ def main():
     candidates = fetch_messages()
     test_text = os.environ.get("TEST_TEXT", "").strip()
     if test_text:
+        # SAMPLE_VOICES="a,b,c" turns the test text into one sample episode per voice.
+        voices = [v.strip() for v in os.environ.get("SAMPLE_VOICES", "").split(",") if v.strip()]
         now = datetime.now(timezone.utc)
-        candidates.append({
-            "id": "test-" + now.strftime("%Y%m%d%H%M%S"),
-            "title": "حلقة تجريبية " + now.strftime("%Y-%m-%d %H:%M"),
-            "text": clean_for_speech(test_text),
-            "date": now.isoformat(),
-        })
+        for n, voice in enumerate(voices or [None]):
+            stamp = now.replace(microsecond=n)
+            candidates.append({
+                "id": f"test-{now:%Y%m%d%H%M%S}-{n}",
+                "title": f"عينة صوت: {voice.split(':')[-1]}" if voice else f"حلقة تجريبية {now:%Y-%m-%d %H:%M}",
+                "text": clean_for_speech(test_text),
+                "date": stamp.isoformat(),
+                "voice": voice,
+            })
     new = [m for m in candidates if m["id"] not in known]
     log(f"New episodes: {len(new)}")
     if not new:
@@ -387,12 +426,12 @@ def main():
         mp3 = ep_dir / f"{msg['id']}.mp3"
         spoken = f"{msg['title']}.\n\n{msg['text']}"
         try:
-            synthesize(spoken, mp3, VOICE_AR if is_arabic(msg["text"]) else VOICE_EN)
+            voice = msg.pop("voice", None) or (VOICE_AR if is_arabic(msg["text"]) else VOICE_EN)
+            synthesize(spoken, mp3, voice)
         except RuntimeError as exc:
             log(f"Skipping one message, will retry next run: {exc}")
             continue
-        size = mp3.stat().st_size
-        created.append({**msg, "bytes": size, "duration": round(size / MP3_BYTES_PER_SECOND)})
+        created.append({**msg, "bytes": mp3.stat().st_size, "duration": mp3_seconds(mp3)})
     if not created:
         set_output("changed", "false")
         return
