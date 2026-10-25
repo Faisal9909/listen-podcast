@@ -159,7 +159,7 @@ def fetch_messages():
         log("GMAIL_ADDRESS / GMAIL_APP_PASSWORD not set; skipping Gmail.")
         return []
 
-    conn = imaplib.IMAP4_SSL("imap.gmail.com")
+    conn = imaplib.IMAP4_SSL("imap.gmail.com", timeout=60)
     conn.login(address, password.replace(" ", ""))
     try:
         conn.select(_all_mail_folder(conn), readonly=True)
@@ -211,23 +211,58 @@ def parse_message(raw, fallback_id=""):
 # ---------------------------------------------------------------- speech
 
 
-async def _synthesize(text, voice, path):
+CHUNK_CHARS = 2500
+CHUNK_TIMEOUT_SECONDS = 120
+
+
+def split_chunks(text, limit=CHUNK_CHARS):
+    """Split at paragraph/sentence boundaries so each request stays small."""
+    pieces = re.split(r"(?<=[.!?؟\n])\s+", text)
+    chunks, current = [], ""
+    for piece in pieces:
+        while len(piece) > limit:
+            cut = piece.rfind(" ", 0, limit)
+            cut = cut if cut > 0 else limit
+            chunks.append(piece[:cut])
+            piece = piece[cut:].lstrip()
+        if current and len(current) + len(piece) + 1 > limit:
+            chunks.append(current)
+            current = piece
+        else:
+            current = f"{current} {piece}".strip()
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+async def _synthesize_chunk(text, voice):
     import edge_tts
 
-    await edge_tts.Communicate(text, voice, rate=RATE).save(str(path))
+    audio = bytearray()
+    async for event in edge_tts.Communicate(text, voice, rate=RATE).stream():
+        if event["type"] == "audio":
+            audio.extend(event["data"])
+    return bytes(audio)
 
 
 def synthesize(text, path, voice):
-    for attempt in range(1, 4):
-        try:
-            asyncio.run(_synthesize(text, voice, path))
-            if path.exists() and path.stat().st_size > 0:
-                return
-            raise RuntimeError("empty audio")
-        except Exception as exc:  # noqa: BLE001 - edge-tts raises several types
-            log(f"TTS attempt {attempt} failed: {type(exc).__name__}")
-            time.sleep(5 * attempt)
-    raise RuntimeError("TTS failed after 3 attempts")
+    chunks = split_chunks(text)
+    audio = bytearray()
+    for index, chunk in enumerate(chunks, 1):
+        for attempt in range(1, 4):
+            try:
+                data = asyncio.run(asyncio.wait_for(_synthesize_chunk(chunk, voice), CHUNK_TIMEOUT_SECONDS))
+                if not data:
+                    raise RuntimeError("empty audio")
+                audio.extend(data)
+                log(f"  chunk {index}/{len(chunks)} done")
+                break
+            except Exception as exc:  # noqa: BLE001 - edge-tts raises several types
+                log(f"  chunk {index}/{len(chunks)} attempt {attempt} failed: {type(exc).__name__}")
+                time.sleep(5 * attempt)
+        else:
+            raise RuntimeError("TTS failed after 3 attempts")
+    path.write_bytes(audio)
 
 
 # ---------------------------------------------------------------- site
