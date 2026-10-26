@@ -120,6 +120,7 @@ def clean_for_speech(text):
         line = re.sub(r"\s{2,}", " ", line).strip()
         lines.append(line)
     text = "\n".join(lines)
+    text = text.replace("ﷺ", "صلى الله عليه وسلم")  # the ligature is often skipped by TTS voices
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
