@@ -207,7 +207,7 @@ def parse_message(raw, fallback_id=""):
         "id": hashlib.sha1(message_id.encode()).hexdigest()[:16],
         "title": clean_subject(str(msg.get("Subject") or "")) or "بدون عنوان",
         "text": clean_for_speech(text),
-        "date": sent.isoformat(),
+        "date": sent.astimezone(timezone.utc).isoformat(),
     }
 
 
@@ -425,7 +425,7 @@ def main():
                 "date": stamp.isoformat(),
                 "voice": voice,
             })
-    new = sorted((m for m in candidates if m["id"] not in known), key=lambda m: m["date"])
+    new = sorted((m for m in candidates if m["id"] not in known), key=lambda m: datetime.fromisoformat(m["date"]))
     # Publish a few at a time so the first episodes appear quickly; the workflow
     # starts another run while more are waiting.
     # Test samples are not stored anywhere else, so they always go in this run.
@@ -458,7 +458,7 @@ def main():
         set_output("changed", "false")
         return
 
-    episodes = sorted(published + created, key=lambda e: e["date"], reverse=True)[:MAX_EPISODES]
+    episodes = sorted(published + created, key=lambda e: datetime.fromisoformat(e["date"]), reverse=True)[:MAX_EPISODES]
     # Pages deploys replace the whole site, so carry the older MP3s over from the live site.
     for ep in episodes:
         mp3 = ep_dir / f"{ep['id']}.mp3"
