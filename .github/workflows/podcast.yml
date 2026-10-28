@@ -8,6 +8,9 @@ on:
       test_text:
         description: "نص تجريبي يتحول إلى حلقة (اختياري)"
         required: false
+      remove:
+        description: "احذف الحلقات اللي عنوانها يحتوي هذا النص (اختياري)"
+        required: false
       sample_voices:
         description: "أصوات للمقارنة مفصولة بفواصل (اختياري)، مثل en-US-AvaMultilingualNeural,google:en-US-Chirp3-HD-Charon"
         required: false
@@ -55,6 +58,7 @@ jobs:
           TTS_RATE: ${{ vars.TTS_RATE }}
           TEST_TEXT: ${{ inputs.test_text }}
           SAMPLE_VOICES: ${{ inputs.sample_voices }}
+          REMOVE_MATCH: ${{ inputs.remove }}
           GOOGLE_TTS_KEY: ${{ secrets.GOOGLE_TTS_KEY }}
 
       - if: steps.build.outputs.changed == 'true'

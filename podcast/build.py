@@ -310,6 +310,11 @@ def http_get(url):
         raise
 
 
+def load_removed(base_url):
+    data = http_get(f"{base_url}/removed.json?t={int(time.time())}")
+    return json.loads(data) if data else []
+
+
 def load_published(base_url):
     data = http_get(f"{base_url}/episodes.json?t={int(time.time())}")
     return json.loads(data) if data else []
@@ -393,8 +398,16 @@ def main():
     base_url = f"{site_url}/{token}"
 
     published = load_published(base_url)
-    known = {ep["id"] for ep in published}
-    log(f"Published episodes: {len(published)}")
+    removed = load_removed(base_url)
+    # REMOVE_MATCH drops episodes whose title contains it; their ids are remembered so the
+    # matching emails are never converted again.
+    match = os.environ.get("REMOVE_MATCH", "").strip()
+    dropped = [ep for ep in published if match and match in ep["title"]]
+    if dropped:
+        removed += [ep["id"] for ep in dropped]
+        published = [ep for ep in published if ep not in dropped]
+    known = {ep["id"] for ep in published} | set(removed)
+    log(f"Published episodes: {len(published)}, removed now: {len(dropped)}")
 
     candidates = fetch_messages()
     test_text = os.environ.get("TEST_TEXT", "").strip()
@@ -413,7 +426,7 @@ def main():
             })
     new = [m for m in candidates if m["id"] not in known]
     log(f"New episodes: {len(new)}")
-    if not new:
+    if not new and not dropped:
         set_output("changed", "false")
         return
 
@@ -433,7 +446,7 @@ def main():
             log(f"Skipping one message, will retry next run: {exc}")
             continue
         created.append({**msg, "bytes": mp3.stat().st_size, "duration": mp3_seconds(mp3)})
-    if not created:
+    if not created and not dropped:
         set_output("changed", "false")
         return
 
@@ -449,6 +462,7 @@ def main():
 
     site = OUT_DIR / token
     (site / "episodes.json").write_text(json.dumps(episodes, ensure_ascii=False, indent=1), encoding="utf-8")
+    (site / "removed.json").write_text(json.dumps(removed), encoding="utf-8")
     write_feed(episodes, base_url, site / "feed.xml")
     write_player(episodes, base_url, site / "index.html")
     shutil.copy(HERE / "cover.png", site / "cover.png")
