@@ -38,6 +38,7 @@ VOICE_AR = os.environ.get("VOICE_AR") or "ar-SA-HamedNeural"
 VOICE_EN = os.environ.get("VOICE_EN") or "en-US-AndrewNeural"
 RATE = os.environ.get("TTS_RATE") or "+0%"
 MAX_EPISODES = int(os.environ.get("MAX_EPISODES") or 60)
+MAX_NEW_PER_RUN = int(os.environ.get("MAX_NEW_PER_RUN") or 1)
 PODCAST_TITLE = os.environ.get("PODCAST_TITLE") or "استمع — نصائحي اليومية"
 
 GOOGLE_TTS_KEY = os.environ.get("GOOGLE_TTS_KEY", "").strip()
@@ -424,8 +425,15 @@ def main():
                 "date": stamp.isoformat(),
                 "voice": voice,
             })
-    new = [m for m in candidates if m["id"] not in known]
-    log(f"New episodes: {len(new)}")
+    new = sorted((m for m in candidates if m["id"] not in known), key=lambda m: m["date"])
+    # Publish a few at a time so the first episodes appear quickly; the workflow
+    # starts another run while more are waiting.
+    # Test samples are not stored anywhere else, so they always go in this run.
+    tests = [m for m in new if m["id"].startswith("test-")]
+    emails = [m for m in new if not m["id"].startswith("test-")]
+    waiting = len(emails) - MAX_NEW_PER_RUN
+    new = tests + emails[:MAX_NEW_PER_RUN]
+    log(f"New episodes this run: {len(new)}, still waiting: {max(0, waiting)}")
     if not new and not dropped:
         set_output("changed", "false")
         return
@@ -436,7 +444,7 @@ def main():
     ep_dir.mkdir(parents=True)
 
     created = []
-    for msg in sorted(new, key=lambda m: m["date"]):
+    for msg in new:
         mp3 = ep_dir / f"{msg['id']}.mp3"
         spoken = f"{msg['title']}.\n\n{msg['text']}"
         try:
@@ -471,6 +479,7 @@ def main():
 
     log(f"Site built with {len(episodes)} episode(s).")
     set_output("changed", "true")
+    set_output("more", "true" if waiting > 0 and created else "false")
 
 
 if __name__ == "__main__":

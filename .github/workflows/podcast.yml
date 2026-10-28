@@ -31,6 +31,7 @@ jobs:
     timeout-minutes: 30
     outputs:
       changed: ${{ steps.build.outputs.changed }}
+      more: ${{ steps.build.outputs.more }}
     steps:
       - uses: actions/checkout@v4
 
@@ -82,3 +83,10 @@ jobs:
       name: github-pages
     steps:
       - uses: actions/deploy-pages@v4
+
+      # One episode per run keeps new episodes appearing quickly; start the next run if more are waiting.
+      - name: Continue with the next episode
+        if: needs.build.outputs.more == 'true'
+        run: gh workflow run podcast.yml -R "${{ github.repository }}" --ref "${{ github.ref_name }}"
+        env:
+          GH_TOKEN: ${{ github.token }}
