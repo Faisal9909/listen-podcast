@@ -28,6 +28,12 @@
   audio { width: 100%; }
   details { margin-top: 8px; color: var(--muted); }
   details p { color: var(--text); }
+  .topics { background: var(--card); border-radius: 16px; padding: 12px 16px; margin: 0 0 24px; }
+  .topics summary { color: var(--text); font-weight: 600; cursor: pointer; }
+  .topics ul { list-style: none; padding: 0; margin: 8px 0 0; }
+  .topics li { padding: 6px 0; }
+  .topics a { color: var(--accent); }
+  .topics span { color: var(--muted); font-size: 14px; }
 </style>
 </head>
 <body>
@@ -36,6 +42,9 @@
   <p class="sub">رسائلك اليومية بصوت مسموع.</p>
   <a class="add" href="podcast://{{FEED_HOST}}/feed.xml">إضافة إلى تطبيق Podcasts</a>
   <p class="feed">{{FEED_URL}}</p>
+  <details class="topics"><summary>اشترك في موضوع واحد</summary><ul>
+{{TOPICS}}
+  </ul></details>
 {{EPISODES}}
 </main>
 </body>

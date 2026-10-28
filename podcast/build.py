@@ -4,7 +4,9 @@ Runs inside GitHub Actions. Each run:
   1. reads the episode list already published on GitHub Pages,
   2. finds new Gmail messages matching GMAIL_QUERY,
   3. converts each one to MP3 with Microsoft Edge neural voices (edge-tts),
-  4. rebuilds the site (feed.xml + player page) into _site/ for deployment.
+  4. joins finished series ("Part 1", "Part 2", ...) into one episode once no new part arrived
+     for COMBINE_AFTER_HOURS,
+  5. rebuilds the site (feed.xml, one feed per topic under topics/, player page) into _site/.
 
 Nothing is deployed when there are no new messages, so hourly runs are cheap.
 The episodes live under a secret path (FEED_TOKEN) that never appears in the repo.
@@ -298,6 +300,101 @@ def synthesize(text, path, voice):
     path.write_bytes(b"".join(parts))
 
 
+# ---------------------------------------------------------------- topics and series
+
+COMBINE_AFTER_HOURS = float(os.environ.get("COMBINE_AFTER_HOURS") or 6)
+# "Topic, Part 3: ...", "Topic — Chapter 8, Episode 1: ...", "Topic – Title", "Topic: Title"
+TOPIC_SPLIT = re.compile(r",\s*(?:Part|Chapter|Episode|الجزء|الحلقة)\b|\s[-–—|]\s|:\s", re.I)
+# "Series, Part 3", "Series — Chapter 8, Episode 1", "السلسلة - الجزء 3"
+PART_NUMBER = re.compile(r"^(.*?)(?:,\s*|\s+[-–—:]?\s*)(?:Part|Episode|الجزء|الحلقة)\s*(\d+)\b", re.I)
+
+
+def _title_topic(title):
+    tag = re.match(r"^\[([^\]]+)\]", title)
+    if tag:
+        return tag.group(1).strip()
+    head = TOPIC_SPLIT.split(title, 1)
+    return head[0].strip() if len(head) > 1 and head[0].strip() else None
+
+
+def topic_of(ep):
+    """Each topic gets its own feed: a leading [Tag], else the title text before the first separator."""
+    series = ep.get("series")
+    return _title_topic(series or ep["title"]) or series or "متفرقات"
+
+
+def part_of(ep):
+    """(series, part number) for an episode, or (None, None)."""
+    if ep.get("series"):
+        return ep["series"], None
+    match = PART_NUMBER.match(ep["title"])
+    return (match.group(1).strip(), int(match.group(2))) if match else (None, None)
+
+
+def plan_combines(published, pending):
+    """Series whose parts 1..N are all published and quiet for COMBINE_AFTER_HOURS become one episode.
+
+    A later part is appended to the existing combined episode. Series with emails still waiting
+    to be converted are left alone until those are published.
+    """
+    waiting = {part_of(m)[0] for m in pending}
+    now = datetime.now(timezone.utc)
+    groups = {}
+    for ep in published:
+        series, number = part_of(ep)
+        if series and series not in waiting:
+            groups.setdefault(series, {"full": None, "parts": []})
+            if number is None:
+                groups[series]["full"] = ep
+            else:
+                groups[series]["parts"].append((number, ep))
+    plans = []
+    for series, group in groups.items():
+        full, parts = group["full"], sorted(group["parts"], key=lambda p: p[0])
+        done = full["parts"] if full else []
+        numbers = done + [n for n, _ in parts]
+        if not parts or len(numbers) < 2 or sorted(numbers) != list(range(1, len(numbers) + 1)):
+            continue
+        if min(n for n, _ in parts) <= max(done, default=0):
+            continue  # a part number that is already inside the combined episode
+        latest = max(datetime.fromisoformat(ep["date"]) for _, ep in parts)
+        if (now - latest).total_seconds() < COMBINE_AFTER_HOURS * 3600:
+            continue
+        plans.append({"series": series, "full": full, "parts": parts})
+    return plans
+
+
+def combined_episode(plan, base_url, ep_dir):
+    """Build the combined MP3 from the live site's files; returns (episode, replaced ids) or None."""
+    pieces = ([plan["full"]] if plan["full"] else []) + [ep for _, ep in plan["parts"]]
+    audio = []
+    for ep in pieces:
+        data = http_get(f"{base_url}/episodes/{ep['id']}.mp3")
+        if not data:
+            return None
+        audio.append(data)
+    ids = [ep["id"] for ep in pieces]
+    numbers = (plan["full"]["parts"] if plan["full"] else []) + [n for n, _ in plan["parts"]]
+    series = plan["series"]
+    full_id = "full-" + hashlib.sha1(",".join(ids).encode()).hexdigest()[:16]
+    mp3 = ep_dir / f"{full_id}.mp3"
+    mp3.write_bytes(b"".join(audio))
+    label = "كاملة" if is_arabic(series) else "Full"
+    texts = [plan["full"]["text"]] if plan["full"] else []
+    texts += [f"{ep['title']}\n\n{ep['text']}" for _, ep in plan["parts"]]
+    episode = {
+        "id": full_id,
+        "title": f"{series} ({label}, {len(numbers)})",
+        "text": "\n\n".join(texts),
+        "date": datetime.now(timezone.utc).isoformat(),
+        "series": series,
+        "parts": numbers,
+        "bytes": mp3.stat().st_size,
+        "duration": mp3_seconds(mp3),
+    }
+    return episode, ids
+
+
 # ---------------------------------------------------------------- site
 
 
@@ -321,7 +418,11 @@ def load_published(base_url):
     return json.loads(data) if data else []
 
 
-def write_feed(episodes, base_url, path):
+def topic_slug(topic):
+    return hashlib.sha1(topic.encode()).hexdigest()[:10]
+
+
+def write_feed(episodes, base_url, path, title=PODCAST_TITLE):
     items = []
     for ep in episodes:
         pub = email.utils.format_datetime(datetime.fromisoformat(ep["date"]))
@@ -338,7 +439,7 @@ def write_feed(episodes, base_url, path):
     feed = f"""<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
   <channel>
-    <title>{escape(PODCAST_TITLE)}</title>
+    <title>{escape(title)}</title>
     <link>{base_url}/</link>
     <language>ar</language>
     <description>رسائل البريد محوّلة إلى صوت تلقائيًا.</description>
@@ -371,6 +472,15 @@ def write_player(episodes, base_url, path):
     page = page.replace("{{TITLE}}", html.escape(PODCAST_TITLE))
     page = page.replace("{{FEED_HOST}}", html.escape(feed_host))
     page = page.replace("{{FEED_URL}}", html.escape(f"{base_url}/feed.xml"))
+    topics = {}
+    for ep in episodes:
+        topics.setdefault(topic_of(ep), 0)
+        topics[topic_of(ep)] += 1
+    links = [
+        f'<li><a href="podcast://{feed_host}/topics/{topic_slug(t)}.xml">{html.escape(t)}</a> <span>{n}</span></li>'
+        for t, n in topics.items()
+    ]
+    page = page.replace("{{TOPICS}}", "\n".join(links))
     page = page.replace("{{EPISODES}}", "\n".join(rows) or "<p>لا توجد حلقات بعد.</p>")
     path.write_text(page, encoding="utf-8")
 
@@ -434,7 +544,9 @@ def main():
     waiting = len(emails) - MAX_NEW_PER_RUN
     new = tests + emails[:MAX_NEW_PER_RUN]
     log(f"New episodes this run: {len(new)}, still waiting: {max(0, waiting)}")
-    if not new and not dropped:
+    combines = plan_combines(published, emails)
+    log(f"Series ready to combine: {len(combines)}")
+    if not new and not dropped and not combines:
         set_output("changed", "false")
         return
 
@@ -454,6 +566,16 @@ def main():
             log(f"Skipping one message, will retry next run: {exc}")
             continue
         created.append({**msg, "bytes": mp3.stat().st_size, "duration": mp3_seconds(mp3)})
+    # The parts are replaced by the combined episode and remembered as removed, so they never come back.
+    for plan in combines:
+        result = combined_episode(plan, base_url, ep_dir)
+        if not result:
+            log("Skipping one series, a part could not be downloaded")
+            continue
+        episode, replaced = result
+        created.append(episode)
+        removed += replaced
+        published = [ep for ep in published if ep["id"] not in replaced]
     if not created and not dropped:
         set_output("changed", "false")
         return
@@ -472,6 +594,10 @@ def main():
     (site / "episodes.json").write_text(json.dumps(episodes, ensure_ascii=False, indent=1), encoding="utf-8")
     (site / "removed.json").write_text(json.dumps(removed), encoding="utf-8")
     write_feed(episodes, base_url, site / "feed.xml")
+    (site / "topics").mkdir()
+    for topic in {topic_of(ep) for ep in episodes}:
+        mine = [ep for ep in episodes if topic_of(ep) == topic]
+        write_feed(mine, base_url, site / "topics" / f"{topic_slug(topic)}.xml", topic)
     write_player(episodes, base_url, site / "index.html")
     shutil.copy(HERE / "cover.png", site / "cover.png")
     (OUT_DIR / "index.html").write_text("<!doctype html><title>Listen</title>", encoding="utf-8")
