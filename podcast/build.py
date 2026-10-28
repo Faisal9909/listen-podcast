@@ -33,6 +33,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from xml.sax.saxutils import escape
 
+import covers
+
 HERE = Path(__file__).resolve().parent
 OUT_DIR = Path(os.environ.get("OUT_DIR", "_site"))
 
@@ -422,7 +424,26 @@ def topic_slug(topic):
     return hashlib.sha1(topic.encode()).hexdigest()[:10]
 
 
-def write_feed(episodes, base_url, path, title=PODCAST_TITLE):
+def topic_cover(topic, base_url, topics_dir):
+    """URL of the topic's cover: reuse the published one, otherwise draw it; None falls back to cover.png."""
+    name = f"{topic_slug(topic)}-{covers.DESIGN_VERSION}.png"
+    out = topics_dir / name
+    try:
+        data = http_get(f"{base_url}/topics/{name}")
+    except OSError:
+        data = None
+    if data:
+        out.write_bytes(data)
+    else:
+        try:
+            log(f"Drawing cover with icon {covers.make_cover(topic, out)}")
+        except Exception as exc:  # noqa: BLE001 - a missing cover must never block publishing
+            log(f"Cover not drawn: {type(exc).__name__}")
+            return None
+    return f"{base_url}/topics/{name}"
+
+
+def write_feed(episodes, base_url, path, title=PODCAST_TITLE, image=None):
     items = []
     for ep in episodes:
         pub = email.utils.format_datetime(datetime.fromisoformat(ep["date"]))
@@ -444,7 +465,7 @@ def write_feed(episodes, base_url, path, title=PODCAST_TITLE):
     <language>ar</language>
     <description>رسائل البريد محوّلة إلى صوت تلقائيًا.</description>
     <itunes:author>Listen</itunes:author>
-    <itunes:image href="{base_url}/cover.png"/>
+    <itunes:image href="{image or base_url + '/cover.png'}"/>
     <itunes:explicit>false</itunes:explicit>
     <itunes:block>Yes</itunes:block>
 {chr(10).join(items)}
@@ -597,7 +618,8 @@ def main():
     (site / "topics").mkdir()
     for topic in {topic_of(ep) for ep in episodes}:
         mine = [ep for ep in episodes if topic_of(ep) == topic]
-        write_feed(mine, base_url, site / "topics" / f"{topic_slug(topic)}.xml", topic)
+        image = topic_cover(topic, base_url, site / "topics")
+        write_feed(mine, base_url, site / "topics" / f"{topic_slug(topic)}.xml", topic, image)
     write_player(episodes, base_url, site / "index.html")
     shutil.copy(HERE / "cover.png", site / "cover.png")
     (OUT_DIR / "index.html").write_text("<!doctype html><title>Listen</title>", encoding="utf-8")
