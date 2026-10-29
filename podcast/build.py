@@ -41,7 +41,7 @@ OUT_DIR = Path(os.environ.get("OUT_DIR", "_site"))
 VOICE_AR = os.environ.get("VOICE_AR") or "ar-SA-HamedNeural"
 VOICE_EN = os.environ.get("VOICE_EN") or "en-US-AndrewNeural"
 RATE = os.environ.get("TTS_RATE") or "+0%"
-MAX_EPISODES = int(os.environ.get("MAX_EPISODES") or 60)
+MAX_EPISODES = int(os.environ.get("MAX_EPISODES") or 1000)
 MAX_NEW_PER_RUN = int(os.environ.get("MAX_NEW_PER_RUN") or 1)
 PODCAST_TITLE = os.environ.get("PODCAST_TITLE") or "استمع — نصائحي اليومية"
 
