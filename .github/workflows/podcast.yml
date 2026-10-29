@@ -46,6 +46,13 @@ jobs:
       - id: pages
         uses: actions/configure-pages@v5
 
+      # Last run's MP3s, so only new or missing files are fetched from the live site.
+      - uses: actions/cache/restore@v4
+        with:
+          path: _mirror
+          key: mirror-${{ github.run_id }}
+          restore-keys: mirror-
+
       - id: build
         run: python podcast/build.py
         env:
@@ -61,6 +68,12 @@ jobs:
           SAMPLE_VOICES: ${{ inputs.sample_voices }}
           REMOVE_MATCH: ${{ inputs.remove }}
           GOOGLE_TTS_KEY: ${{ secrets.GOOGLE_TTS_KEY }}
+
+      - if: steps.build.outputs.changed == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: _mirror
+          key: mirror-${{ github.run_id }}-${{ github.run_attempt }}
 
       - if: steps.build.outputs.changed == 'true'
         uses: actions/upload-pages-artifact@v3

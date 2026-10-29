@@ -37,6 +37,8 @@ import covers
 
 HERE = Path(__file__).resolve().parent
 OUT_DIR = Path(os.environ.get("OUT_DIR", "_site"))
+# Copies of the published MP3s kept in the Actions cache, so runs don't re-download the whole site.
+MIRROR_DIR = Path(os.environ.get("MIRROR_DIR", "_mirror"))
 
 VOICE_AR = os.environ.get("VOICE_AR") or "ar-SA-HamedNeural"
 VOICE_EN = os.environ.get("VOICE_EN") or "en-US-AndrewNeural"
@@ -371,7 +373,7 @@ def combined_episode(plan, base_url, ep_dir):
     pieces = ([plan["full"]] if plan["full"] else []) + [ep for _, ep in plan["parts"]]
     audio = []
     for ep in pieces:
-        data = fetch_live(f"{base_url}/episodes/{ep['id']}.mp3")
+        data = episode_audio(ep["id"], base_url)
         if not data:
             return None
         audio.append(data)
@@ -421,6 +423,21 @@ def fetch_live(url, attempts=4):
             return data
         time.sleep(10 * attempt)
     return None
+
+
+def episode_audio(ep_id, base_url):
+    """An episode's MP3: from the Actions cache mirror when present, else from the live site."""
+    cached = MIRROR_DIR / f"{ep_id}.mp3"
+    if cached.exists():
+        return cached.read_bytes()
+    return fetch_live(f"{base_url}/episodes/{ep_id}.mp3")
+
+
+def sync_mirror(ep_dir):
+    """Keep the mirror equal to the published episodes, for the next run's cache."""
+    if MIRROR_DIR.exists():
+        shutil.rmtree(MIRROR_DIR)
+    shutil.copytree(ep_dir, MIRROR_DIR)
 
 
 def load_removed(base_url):
@@ -620,7 +637,7 @@ def main():
     for ep in episodes:
         mp3 = ep_dir / f"{ep['id']}.mp3"
         if not mp3.exists():
-            data = fetch_live(f"{base_url}/episodes/{ep['id']}.mp3")
+            data = episode_audio(ep["id"], base_url)
             if not data:
                 sys.exit("An existing episode's audio could not be fetched; not publishing this run.")
             mp3.write_bytes(data)
@@ -639,6 +656,7 @@ def main():
     (OUT_DIR / "index.html").write_text("<!doctype html><title>Listen</title>", encoding="utf-8")
     (OUT_DIR / ".nojekyll").write_text("", encoding="utf-8")
 
+    sync_mirror(ep_dir)
     log(f"Site built with {len(episodes)} episode(s).")
     set_output("changed", "true")
     set_output("more", "true" if waiting > 0 and created else "false")
