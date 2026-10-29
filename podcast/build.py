@@ -294,7 +294,21 @@ async def _synthesize_all(chunks, voice):
                 except Exception as exc:  # noqa: BLE001 - edge-tts raises several types
                     log(f"  chunk {index}/{len(chunks)} attempt {attempt} failed: {type(exc).__name__} {exc}"[:400])
                     await asyncio.sleep(5 * attempt)
+            return await by_sentence(index, chunk)
+
+    async def by_sentence(index, chunk):
+        """Some sentences make the voice return no audio; isolate them so the rest still plays."""
+        sentences = [s for s in re.split(r"(?<=[.!?؟\n])\s+", chunk) if s.strip()]
+        audio, skipped = bytearray(), 0
+        for sentence in sentences:
+            try:
+                audio.extend(await asyncio.wait_for(_synthesize_chunk(sentence, voice), CHUNK_TIMEOUT_SECONDS))
+            except Exception:  # noqa: BLE001
+                skipped += 1
+        if skipped == len(sentences):
             raise RuntimeError("TTS failed after 3 attempts")
+        log(f"  chunk {index}/{len(chunks)} done sentence by sentence, {skipped} of {len(sentences)} skipped")
+        return bytes(audio)
 
     return await asyncio.gather(*(one(i, c) for i, c in enumerate(chunks, 1)))
 
