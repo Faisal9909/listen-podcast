@@ -371,7 +371,7 @@ def combined_episode(plan, base_url, ep_dir):
     pieces = ([plan["full"]] if plan["full"] else []) + [ep for _, ep in plan["parts"]]
     audio = []
     for ep in pieces:
-        data = http_get(f"{base_url}/episodes/{ep['id']}.mp3")
+        data = fetch_live(f"{base_url}/episodes/{ep['id']}.mp3")
         if not data:
             return None
         audio.append(data)
@@ -408,6 +408,19 @@ def http_get(url):
         if exc.code == 404:
             return None
         raise
+
+
+def fetch_live(url, attempts=4):
+    """A published file, retried with cache-busting because Pages can lag right after a deploy."""
+    for attempt in range(1, attempts + 1):
+        try:
+            data = http_get(f"{url}?t={time.time_ns()}")
+        except OSError:
+            data = None
+        if data:
+            return data
+        time.sleep(10 * attempt)
+    return None
 
 
 def load_removed(base_url):
@@ -603,13 +616,14 @@ def main():
 
     episodes = sorted(published + created, key=lambda e: datetime.fromisoformat(e["date"]), reverse=True)[:MAX_EPISODES]
     # Pages deploys replace the whole site, so carry the older MP3s over from the live site.
+    # A file that cannot be fetched stops the run: publishing without it would drop the episode.
     for ep in episodes:
         mp3 = ep_dir / f"{ep['id']}.mp3"
         if not mp3.exists():
-            data = http_get(f"{base_url}/episodes/{ep['id']}.mp3")
-            if data:
-                mp3.write_bytes(data)
-    episodes = [ep for ep in episodes if (ep_dir / f"{ep['id']}.mp3").exists()]
+            data = fetch_live(f"{base_url}/episodes/{ep['id']}.mp3")
+            if not data:
+                sys.exit("An existing episode's audio could not be fetched; not publishing this run.")
+            mp3.write_bytes(data)
 
     site = OUT_DIR / token
     (site / "episodes.json").write_text(json.dumps(episodes, ensure_ascii=False, indent=1), encoding="utf-8")
