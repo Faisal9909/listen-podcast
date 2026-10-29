@@ -8,6 +8,10 @@ on:
       test_text:
         description: "نص تجريبي يتحول إلى حلقة (اختياري)"
         required: false
+      retry:
+        description: "عداد إعادة المحاولة التلقائية (لا تعدّله)"
+        required: false
+        default: "0"
       remove:
         description: "احذف الحلقات اللي عنوانها يحتوي هذا النص (اختياري)"
         required: false
@@ -79,6 +83,15 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           path: _site
+
+      # A temporary failure (TTS or Pages hiccup) would otherwise stop the chain until the next hourly run.
+      - name: Retry after a failure
+        if: failure() && fromJSON(inputs.retry || '0') < 3
+        run: |
+          sleep 120
+          gh workflow run podcast.yml -R "${{ github.repository }}" --ref "${{ github.ref_name }}" -f retry=$(( ${{ inputs.retry || '0' }} + 1 ))
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       # GitHub pauses scheduled workflows after 60 days without repo activity; keep this one on.
       - name: Keep schedule alive
