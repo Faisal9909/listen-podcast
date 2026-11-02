@@ -313,9 +313,43 @@ async def _synthesize_all(chunks, voice):
     return await asyncio.gather(*(one(i, c) for i, c in enumerate(chunks, 1)))
 
 
+# Two-voice scripts: lines starting "HOST:" or "EXPERT:" are read by different voices.
+SPEAKER_LINE = re.compile(r"^\s*(HOST|EXPERT)\s*:\s*", re.I | re.M)
+SECOND_VOICE = {
+    "ar": os.environ.get("VOICE_AR_HOST") or "ar-SA-ZariyahNeural",
+    "en": os.environ.get("VOICE_EN_HOST") or "en-US-AvaNeural",
+}
+
+
+def speaker_turns(text):
+    """[(speaker, text)] for a HOST/EXPERT script, or None for ordinary text."""
+    marks = list(SPEAKER_LINE.finditer(text))
+    if len(marks) < 2:
+        return None
+    turns = [] if not text[: marks[0].start()].strip() else [("EXPERT", text[: marks[0].start()].strip())]
+    for mark, nxt in zip(marks, marks[1:] + [None]):
+        body = text[mark.end() : nxt.start() if nxt else len(text)].strip()
+        if not body:
+            continue
+        speaker = mark.group(1).upper()
+        if turns and turns[-1][0] == speaker:
+            turns[-1] = (speaker, f"{turns[-1][1]}\n{body}")
+        else:
+            turns.append((speaker, body))
+    return turns
+
+
 def synthesize(text, path, voice):
-    parts = asyncio.run(_synthesize_all(split_chunks(text), voice))
-    path.write_bytes(b"".join(parts))
+    turns = speaker_turns(text)
+    if not turns:
+        parts = asyncio.run(_synthesize_all(split_chunks(text), voice))
+        path.write_bytes(b"".join(parts))
+        return
+    host = SECOND_VOICE["ar" if voice == VOICE_AR else "en"]
+    audio = []
+    for speaker, said in turns:
+        audio += asyncio.run(_synthesize_all(split_chunks(said), host if speaker == "HOST" else voice))
+    path.write_bytes(b"".join(audio))
 
 
 # ---------------------------------------------------------------- topics and series
