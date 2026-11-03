@@ -281,10 +281,13 @@ async def _synthesize_chunk(text, voice):
     return bytes(audio)
 
 
-async def _synthesize_all(chunks, voice):
+async def _synthesize_all(chunks, voice=None):
+    """chunks: texts read by `voice`, or (text, voice) pairs; all run in parallel, in order."""
     gate = asyncio.Semaphore(PARALLEL_CHUNKS)
+    chunks = [(c, voice) if isinstance(c, str) else c for c in chunks]
 
-    async def one(index, chunk):
+    async def one(index, item):
+        chunk, voice = item
         async with gate:
             for attempt in range(1, 4):
                 try:
@@ -294,9 +297,9 @@ async def _synthesize_all(chunks, voice):
                 except Exception as exc:  # noqa: BLE001 - edge-tts raises several types
                     log(f"  chunk {index}/{len(chunks)} attempt {attempt} failed: {type(exc).__name__} {exc}"[:400])
                     await asyncio.sleep(5 * attempt)
-            return await by_sentence(index, chunk)
+            return await by_sentence(index, chunk, voice)
 
-    async def by_sentence(index, chunk):
+    async def by_sentence(index, chunk, voice):
         """Some sentences make the voice return no audio; isolate them so the rest still plays."""
         sentences = [s for s in re.split(r"(?<=[.!?؟\n])\s+", chunk) if s.strip()]
         audio, skipped = bytearray(), 0
@@ -346,10 +349,9 @@ def synthesize(text, path, voice):
         path.write_bytes(b"".join(parts))
         return
     host = SECOND_VOICE["ar" if voice == VOICE_AR else "en"]
-    audio = []
-    for speaker, said in turns:
-        audio += asyncio.run(_synthesize_all(split_chunks(said), host if speaker == "HOST" else voice))
-    path.write_bytes(b"".join(audio))
+    # One parallel batch for the whole script; one batch per turn was too slow for long episodes.
+    items = [(chunk, host if speaker == "HOST" else voice) for speaker, said in turns for chunk in split_chunks(said)]
+    path.write_bytes(b"".join(asyncio.run(_synthesize_all(items))))
 
 
 # ---------------------------------------------------------------- topics and series

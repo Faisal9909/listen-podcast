@@ -32,7 +32,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     outputs:
       changed: ${{ steps.build.outputs.changed }}
       more: ${{ steps.build.outputs.more }}
@@ -84,9 +84,9 @@ jobs:
         with:
           path: _site
 
-      # A temporary failure (TTS or Pages hiccup) would otherwise stop the chain until the next hourly run.
+      # A temporary failure or a timeout would otherwise stop the chain until the next scheduled run.
       - name: Retry after a failure
-        if: failure() && fromJSON(inputs.retry || '0') < 3
+        if: (failure() || cancelled()) && fromJSON(inputs.retry || '0') < 3
         run: |
           sleep 120
           gh workflow run podcast.yml -R "${{ github.repository }}" --ref "${{ github.ref_name }}" -f retry=$(( ${{ inputs.retry || '0' }} + 1 ))
