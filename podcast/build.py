@@ -440,6 +440,7 @@ def combined_episode(plan, base_url, ep_dir):
         audio[n] = part.read_bytes()
         part.unlink()
     mp3.write_bytes(b"".join(audio))
+    fix_header(mp3)
     label = "كاملة" if is_arabic(series) else "Full"
     texts = [plan["full"]["text"]] if plan["full"] else []
     texts += [f"{ep['title']}\n\n{ep['text']}" for _, ep in plan["parts"]]
@@ -624,6 +625,34 @@ def shrink(path):
     return True
 
 
+def fix_header(path):
+    """Rewrite the length header of a joined MP3.
+
+    Joined files keep the first part's header, so players and the feed would show only
+    the first part's length. Copying the audio through ffmpeg writes a header for the
+    whole file. Returns True when the file was rewritten.
+    """
+    from mutagen.mp3 import MP3, HeaderNotFoundError
+
+    try:
+        info = MP3(path).info
+    except HeaderNotFoundError:
+        return False
+    expected = path.stat().st_size * 8 / max(info.bitrate, 1)
+    if info.length >= 0.9 * expected or not shutil.which("ffmpeg"):
+        return False
+    tmp = path.with_suffix(".tmp.mp3")
+    done = subprocess.run(
+        ["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-i", str(path), "-c:a", "copy", str(tmp)],
+        capture_output=True,
+    )
+    if done.returncode != 0 or not tmp.exists() or tmp.stat().st_size == 0:
+        tmp.unlink(missing_ok=True)
+        return False
+    tmp.replace(path)
+    return True
+
+
 def mp3_seconds(path):
     from mutagen.mp3 import MP3, HeaderNotFoundError
 
@@ -735,6 +764,10 @@ def main():
 
     with ThreadPoolExecutor(4) as pool:
         changed = list(pool.map(lambda ep: shrink(ep_dir / f"{ep['id']}.mp3"), episodes))
+        # Combined episodes published before fix_header existed show only their first part's length.
+        fixed = list(pool.map(lambda ep: fix_header(ep_dir / f"{ep['id']}.mp3"), episodes))
+    changed = [a or b for a, b in zip(changed, fixed)]
+    log(f"Rewrote the length header of {sum(fixed)} joined episode(s).")
     for ep, did in zip(episodes, changed):
         if did:
             mp3 = ep_dir / f"{ep['id']}.mp3"
