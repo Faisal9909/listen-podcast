@@ -24,6 +24,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import time
 import urllib.error
@@ -432,6 +433,12 @@ def combined_episode(plan, base_url, ep_dir):
     series = plan["series"]
     full_id = "full-" + hashlib.sha1(",".join(ids).encode()).hexdigest()[:16]
     mp3 = ep_dir / f"{full_id}.mp3"
+    for n, data in enumerate(audio):  # parts must share one bitrate before they are joined
+        part = ep_dir / f"{full_id}.part{n}.mp3"
+        part.write_bytes(data)
+        shrink(part)
+        audio[n] = part.read_bytes()
+        part.unlink()
     mp3.write_bytes(b"".join(audio))
     label = "كاملة" if is_arabic(series) else "Full"
     texts = [plan["full"]["text"]] if plan["full"] else []
@@ -454,7 +461,7 @@ def combined_episode(plan, base_url, ep_dir):
 
 def http_get(url):
     try:
-        with urllib.request.urlopen(url, timeout=60) as res:
+        with urllib.request.urlopen(url, timeout=300) as res:
             return res.read()
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
@@ -586,6 +593,37 @@ def write_player(episodes, base_url, path):
     path.write_text(page, encoding="utf-8")
 
 
+SPEECH_BITRATE = os.environ.get("SPEECH_BITRATE") or "32k"
+
+
+def shrink(path):
+    """Re-encode speech MP3s above ~40 kbps to SPEECH_BITRATE mono.
+
+    GitHub Pages sites are capped at 1 GB, and speech at 32 kbps loses little.
+    Returns True when the file changed. Without ffmpeg the file is left as is.
+    """
+    from mutagen.mp3 import MP3, HeaderNotFoundError
+
+    try:
+        if MP3(path).info.bitrate <= 40000:
+            return False
+    except HeaderNotFoundError:
+        return False
+    if not shutil.which("ffmpeg"):
+        return False
+    tmp = path.with_suffix(".tmp.mp3")
+    done = subprocess.run(
+        ["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-i", str(path), "-ac", "1", "-ar", "24000",
+         "-b:a", SPEECH_BITRATE, str(tmp)],
+        capture_output=True,
+    )
+    if done.returncode != 0 or not tmp.exists() or tmp.stat().st_size == 0:
+        tmp.unlink(missing_ok=True)
+        return False
+    tmp.replace(path)
+    return True
+
+
 def mp3_seconds(path):
     from mutagen.mp3 import MP3, HeaderNotFoundError
 
@@ -666,6 +704,7 @@ def main():
         except RuntimeError as exc:
             log(f"Skipping one message, will retry next run: {exc}")
             continue
+        shrink(mp3)
         created.append({**msg, "bytes": mp3.stat().st_size, "duration": mp3_seconds(mp3)})
     # The parts are replaced by the combined episode and remembered as removed, so they never come back.
     for plan in combines:
@@ -691,6 +730,16 @@ def main():
             if not data:
                 sys.exit("An existing episode's audio could not be fetched; not publishing this run.")
             mp3.write_bytes(data)
+    # Older episodes were published at 48 kbps; re-encode them once, four at a time.
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(4) as pool:
+        changed = list(pool.map(lambda ep: shrink(ep_dir / f"{ep['id']}.mp3"), episodes))
+    for ep, did in zip(episodes, changed):
+        if did:
+            mp3 = ep_dir / f"{ep['id']}.mp3"
+            ep["bytes"], ep["duration"] = mp3.stat().st_size, mp3_seconds(mp3)
+    log(f"Re-encoded {sum(changed)} episode(s) to {SPEECH_BITRATE}.")
 
     site = OUT_DIR / token
     (site / "episodes.json").write_text(json.dumps(episodes, ensure_ascii=False, indent=1), encoding="utf-8")

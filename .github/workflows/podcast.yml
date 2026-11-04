@@ -47,6 +47,9 @@ jobs:
 
       - run: pip install -r podcast/requirements.txt
 
+      # ffmpeg re-encodes speech to a smaller bitrate (Pages sites are capped at 1 GB).
+      - run: command -v ffmpeg || (sudo apt-get update -q && sudo apt-get install -y -q ffmpeg)
+
       - id: pages
         uses: actions/configure-pages@v5
 
