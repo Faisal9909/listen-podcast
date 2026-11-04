@@ -531,7 +531,7 @@ def merge_mirror_state(published, removed):
     try:
         state = json.loads((MIRROR_DIR / "state.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return published, removed
+        return published, removed, 0
     removed = list(dict.fromkeys(removed + state.get("removed", [])))
     gone = set(removed)
     by_id = {ep["id"]: ep for ep in state.get("episodes", [])}
