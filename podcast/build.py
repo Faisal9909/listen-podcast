@@ -750,8 +750,9 @@ def main():
     removed = load_removed(base_url)
     # REMOVE_MATCH drops episodes whose title contains it; their ids are remembered so the
     # matching emails are never converted again.
-    match = os.environ.get("REMOVE_MATCH", "").strip()
-    dropped = [ep for ep in published if match and match in ep["title"]]
+    # Several texts can be given, separated by "|".
+    matches = [m.strip() for m in os.environ.get("REMOVE_MATCH", "").split("|") if m.strip()]
+    dropped = [ep for ep in published if any(m in ep["title"] for m in matches)]
     if dropped:
         removed += [ep["id"] for ep in dropped]
         published = [ep for ep in published if ep not in dropped]
