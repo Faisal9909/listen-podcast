@@ -125,11 +125,33 @@ def clean_for_speech(text):
         line = re.sub(r"^#{1,6}\s*", "", line)  # markdown headings
         line = re.sub(r"^[-*•]\s+", "", line)  # bullets
         line = re.sub(r"[*_`~|]{1,3}", "", line)  # emphasis / table pipes
+        if is_arabic(line):
+            line = arabic_dashes(line)
         line = re.sub(r"\s{2,}", " ", line).strip()
         lines.append(line)
     text = "\n".join(lines)
     text = text.replace("ﷺ", "صلى الله عليه وسلم")  # the ligature is often skipped by TTS voices
     return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+ORDINALS = ["أولًا", "ثانيًا", "ثالثًا", "رابعًا", "خامسًا", "سادسًا", "سابعًا", "ثامنًا", "تاسعًا", "عاشرًا"]
+DASH = "[-–—]"
+
+
+def arabic_dashes(line):
+    """Arabic voices read a dash aloud as "شرطة"; turn dashes into what a reader would say."""
+    digits = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+    number = re.match(rf"^([0-9٠-٩]+)\s*{DASH}+\s*", line)
+    if number:  # "١- ..." is read as "أولًا، ..."
+        n = int(number.group(1).translate(digits))
+        word = ORDINALS[n - 1] if 1 <= n <= len(ORDINALS) else number.group(1)
+        line = f"{word}، {line[number.end():]}"
+    line = re.sub(rf"^(?:هـ|[أ-ي])\s*{DASH}+\s*", "", line)  # "أ- ..." list letters
+    line = re.sub(rf"(?<=[0-9٠-٩])\s*{DASH}\s*(?=[0-9٠-٩])", " إلى ", line)  # ranges
+    line = re.sub(rf"(?<=[A-Za-z]){DASH}(?=[A-Za-z])", " ", line)
+    line = re.sub(rf"\s*{DASH}+\s*", "، ", line)  # parenthetical dashes
+    line = re.sub(r"^،\s*|،\s*(?=[،.:؛؟!]|$)", "", line)
+    return re.sub(r"،\s*،", "،", line)
 
 
 def is_arabic(text):
@@ -693,12 +715,14 @@ def main():
     if test_text:
         # SAMPLE_VOICES="a,b,c" turns the test text into one sample episode per voice.
         voices = [v.strip() for v in os.environ.get("SAMPLE_VOICES", "").split(",") if v.strip()]
+        label = os.environ.get("SAMPLE_LABEL", "").strip()
         now = datetime.now(timezone.utc)
         for n, voice in enumerate(voices or [None]):
             stamp = now.replace(microsecond=n)
             candidates.append({
                 "id": f"test-{now:%Y%m%d%H%M%S}-{n}",
-                "title": f"عينة صوت: {voice.split(':')[-1]}" if voice else f"حلقة تجريبية {now:%Y-%m-%d %H:%M}",
+                "title": (f"عينة {label}: {voice.split(':')[-1]}" if voice else f"عينة {label}") if label
+                else f"عينة صوت: {voice.split(':')[-1]}" if voice else f"حلقة تجريبية {now:%Y-%m-%d %H:%M}",
                 "text": clean_for_speech(test_text),
                 "date": stamp.isoformat(),
                 "voice": voice,
