@@ -29,7 +29,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -553,15 +553,62 @@ def topic_cover(topic, base_url, topics_dir):
     return f"{base_url}/topics/{name}"
 
 
-def write_feed(episodes, base_url, path, title=PODCAST_TITLE, image=None):
-    items = []
+# Series whose order cannot be read from their names; the rest go by number in the name, then date.
+SERIES_ORDER = {
+    "Software Engineering": [
+        "Programming Fundamentals", "Languages, Frameworks, and Libraries", "How Software Runs", "Data",
+        "The Web Stack", "Architecture and Structure", "Security", "Reliability", "Maintainability",
+        "Shipping", "Judgment",
+    ],
+    "Operating Models": ["What It Is", "The Canvas"],
+    "Operating Models Deep Dive": ["Neighbouring Concepts", "Components"],
+}
+ARABIC_ORDINALS = ["الأول", "الثاني", "الثالث", "الرابع", "الخامس", "السادس", "السابع", "الثامن", "التاسع", "العاشر"]
+
+
+def course_order(episodes, topic):
+    """Sort a topic's episodes the way a listener takes the course: series by series, part by part."""
+    explicit = SERIES_ORDER.get(topic, [])
+    first_seen = {}
     for ep in episodes:
-        pub = email.utils.format_datetime(datetime.fromisoformat(ep["date"]))
+        name = part_of(ep)[0] or ep["title"]
+        first_seen[name] = min(first_seen.get(name, ep["date"]), ep["date"])
+
+    def key(ep):
+        name, part = part_of(ep)
+        name = name or ep["title"]
+        rest = name[len(topic):].strip(" —–-|:,") if name.startswith(topic) else name
+        if rest in explicit:
+            rank = (0, explicit.index(rest), "")
+        elif number := re.search(r"\b(?:Chapter|Part|Unit|Module)\s+(\d+)", rest, re.I):
+            rank = (1, int(number.group(1)), "")
+        elif ordinal := next((n for n, w in enumerate(ARABIC_ORDINALS, 1) if re.search(rf"(?:الجزء|الفصل|الباب) {w}\b", rest)), None):
+            rank = (1, ordinal, "")
+        elif re.search(r"\b(final|conclusion|synthesis)\b|خاتمة", rest, re.I):
+            rank = (1, 10**6, "")
+        else:
+            rank = (2, 0, first_seen[name])
+        return rank, part or 0, ep["date"]
+
+    return sorted(episodes, key=key)
+
+
+def write_feed(episodes, base_url, path, title=PODCAST_TITLE, image=None, serial=False):
+    """serial=True lists episodes first to last and numbers them, so Apple Podcasts plays them in order."""
+    items = []
+    if serial:
+        episodes = course_order(episodes, title)
+        start = min(datetime.fromisoformat(ep["date"]) for ep in episodes)
+    for n, ep in enumerate(episodes, 1):
+        # In a serial feed the dates follow the course order too, so every app agrees on it.
+        when = start + timedelta(minutes=n) if serial else datetime.fromisoformat(ep["date"])
+        pub = email.utils.format_datetime(when)
+        number = f"\n      <itunes:episode>{n}</itunes:episode>\n      <itunes:episodeType>full</itunes:episodeType>" if serial else ""
         items.append(
             f"""    <item>
       <title>{escape(ep["title"])}</title>
       <guid isPermaLink="false">{ep["id"]}</guid>
-      <pubDate>{pub}</pubDate>
+      <pubDate>{pub}</pubDate>{number}
       <enclosure url="{base_url}/episodes/{ep["id"]}.mp3" length="{ep["bytes"]}" type="audio/mpeg"/>
       <itunes:duration>{ep["duration"]}</itunes:duration>
       <description>{escape(ep["text"])}</description>
@@ -578,6 +625,7 @@ def write_feed(episodes, base_url, path, title=PODCAST_TITLE, image=None):
     <itunes:image href="{image or base_url + '/cover.png'}"/>
     <itunes:explicit>false</itunes:explicit>
     <itunes:block>Yes</itunes:block>
+    <itunes:type>{"serial" if serial else "episodic"}</itunes:type>
 {chr(10).join(items)}
   </channel>
 </rss>
@@ -816,7 +864,7 @@ def main():
     for topic in {topic_of(ep) for ep in episodes}:
         mine = [ep for ep in episodes if topic_of(ep) == topic]
         image = topic_cover(topic, base_url, site / "topics")
-        write_feed(mine, base_url, site / "topics" / f"{topic_slug(topic)}.xml", topic, image)
+        write_feed(mine, base_url, site / "topics" / f"{topic_slug(topic)}.xml", topic, image, serial=True)
     write_player(episodes, base_url, site / "index.html")
     shutil.copy(HERE / "cover.png", site / "cover.png")
     (OUT_DIR / "index.html").write_text("<!doctype html><title>Listen</title>", encoding="utf-8")
