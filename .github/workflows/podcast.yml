@@ -18,6 +18,9 @@ on:
       sample_voices:
         description: "أصوات للمقارنة مفصولة بفواصل (اختياري)، مثل en-US-AvaMultilingualNeural,google:en-US-Chirp3-HD-Charon"
         required: false
+      title:
+        description: "عنوان الحلقة لو النص حلقة كاملة مو عينة (اختياري)"
+        required: false
       sample_label:
         description: "اسم يميّز العينة في عنوانها (اختياري)"
         required: false
@@ -77,6 +80,7 @@ jobs:
           TEST_TEXT: ${{ inputs.test_text }}
           SAMPLE_VOICES: ${{ inputs.sample_voices }}
           SAMPLE_LABEL: ${{ inputs.sample_label }}
+          EPISODE_TITLE: ${{ inputs.title }}
           REMOVE_MATCH: ${{ inputs.remove }}
           GOOGLE_TTS_KEY: ${{ secrets.GOOGLE_TTS_KEY }}
 

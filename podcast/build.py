@@ -712,7 +712,17 @@ def main():
 
     candidates = fetch_messages()
     test_text = os.environ.get("TEST_TEXT", "").strip()
-    if test_text:
+    title = os.environ.get("EPISODE_TITLE", "").strip()
+    if test_text and title:
+        # A full episode sent straight to the workflow instead of by email (for long, prepared texts).
+        now = datetime.now(timezone.utc)
+        candidates.append({
+            "id": f"text-{now:%Y%m%d%H%M%S}",
+            "title": title,
+            "text": clean_for_speech(test_text),
+            "date": now.isoformat(),
+        })
+    elif test_text:
         # SAMPLE_VOICES="a,b,c" turns the test text into one sample episode per voice.
         voices = [v.strip() for v in os.environ.get("SAMPLE_VOICES", "").split(",") if v.strip()]
         label = os.environ.get("SAMPLE_LABEL", "").strip()
@@ -731,8 +741,8 @@ def main():
     # Publish a few at a time so the first episodes appear quickly; the workflow
     # starts another run while more are waiting.
     # Test samples are not stored anywhere else, so they always go in this run.
-    tests = [m for m in new if m["id"].startswith("test-")]
-    emails = [m for m in new if not m["id"].startswith("test-")]
+    tests = [m for m in new if m["id"].startswith(("test-", "text-"))]
+    emails = [m for m in new if not m["id"].startswith(("test-", "text-"))]
     waiting = len(emails) - MAX_NEW_PER_RUN
     new = tests + emails[:MAX_NEW_PER_RUN]
     log(f"New episodes this run: {len(new)}, still waiting: {max(0, waiting)}")
