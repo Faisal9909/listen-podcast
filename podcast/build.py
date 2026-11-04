@@ -513,11 +513,35 @@ def episode_audio(ep_id, base_url):
     return fetch_live(f"{base_url}/episodes/{ep_id}.mp3")
 
 
-def sync_mirror(ep_dir):
-    """Keep the mirror equal to the published episodes, for the next run's cache."""
+def sync_mirror(ep_dir, episodes, removed):
+    """Keep the mirror equal to the published episodes, for the next run's cache.
+
+    The episode list goes with it: right after a deploy the live site can still serve the
+    previous list, and building on that would drop the episode just published.
+    """
     if MIRROR_DIR.exists():
         shutil.rmtree(MIRROR_DIR)
     shutil.copytree(ep_dir, MIRROR_DIR)
+    state = {"episodes": episodes, "removed": removed}
+    (MIRROR_DIR / "state.json").write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+
+def merge_mirror_state(published, removed):
+    """Add what the last run published (from the mirror) to what the live site shows."""
+    try:
+        state = json.loads((MIRROR_DIR / "state.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return published, removed
+    removed = list(dict.fromkeys(removed + state.get("removed", [])))
+    gone = set(removed)
+    by_id = {ep["id"]: ep for ep in state.get("episodes", [])}
+    by_id.update({ep["id"]: ep for ep in published})
+    merged = sorted((ep for ep in by_id.values() if ep["id"] not in gone),
+                    key=lambda ep: datetime.fromisoformat(ep["date"]), reverse=True)
+    added = len(merged) - len([ep for ep in published if ep["id"] not in gone])
+    if added:
+        log(f"The live site was behind; restored {added} episode(s) from the last run.")
+    return merged, removed, added
 
 
 def load_removed(base_url):
@@ -748,6 +772,7 @@ def main():
 
     published = load_published(base_url)
     removed = load_removed(base_url)
+    published, removed, restored = merge_mirror_state(published, removed)
     # REMOVE_MATCH drops episodes whose title contains it; their ids are remembered so the
     # matching emails are never converted again.
     # Several texts can be given, separated by "|".
@@ -797,7 +822,7 @@ def main():
     log(f"New episodes this run: {len(new)}, still waiting: {max(0, waiting)}")
     combines = plan_combines(published, emails)
     log(f"Series ready to combine: {len(combines)}")
-    if not new and not dropped and not combines:
+    if not new and not dropped and not combines and not restored:
         set_output("changed", "false")
         return
 
@@ -871,7 +896,7 @@ def main():
     (OUT_DIR / "index.html").write_text("<!doctype html><title>Listen</title>", encoding="utf-8")
     (OUT_DIR / ".nojekyll").write_text("", encoding="utf-8")
 
-    sync_mirror(ep_dir)
+    sync_mirror(ep_dir, episodes, removed)
     log(f"Site built with {len(episodes)} episode(s).")
     set_output("changed", "true")
     set_output("more", "true" if waiting > 0 and created else "false")
