@@ -156,7 +156,8 @@ jobs:
               for e in eps:
                   url = f"https://github.com/{repo}/releases/download/{key}/{e['file']}"
                   pub = formatdate(1767225600 + e["n"] * 3600, usegmt=True)  # 2026-01-01 + n hours
-                  items.append(f"""<item><title>{x(e['title'])}</title>
+                  img = f"{pages}covers/{key}-{e['n']:02d}.jpg"  # drawn once and committed under quran/covers
+                  items.append(f"""<item><title>{x(e['title'])}</title><itunes:image href="{img}"/>
           <enclosure url="{url}" length="{e['size']}" type="audio/mpeg"/>
           <guid isPermaLink="false">{key}-hizb-{e['n']:02d}</guid><pubDate>{pub}</pubDate>
           <itunes:episode>{e['n']}</itunes:episode><itunes:episodeType>full</itunes:episodeType>
@@ -167,6 +168,7 @@ jobs:
           <channel><title>{x(title)}</title><link>{pages}</link><language>ar</language>
           <description>{x(title)}: ستون حلقة، حلقة لكل حزب. المصدر: mp3quran.net</description>
           <itunes:author>{x(rc['name'])}</itunes:author><itunes:type>serial</itunes:type>
+          <itunes:image href="{pages}covers/{key}.jpg"/>
           <itunes:category text="Religion &amp; Spirituality"><itunes:category text="Islam"/></itunes:category>
           <itunes:explicit>false</itunes:explicit><itunes:block>Yes</itunes:block>
           {chr(10).join(items)}
