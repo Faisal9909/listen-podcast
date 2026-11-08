@@ -1,0 +1,212 @@
+# Quran by hizb (Shuraim + Sudais) -> GitHub Releases + RSS feeds committed into the EXISTING Pages folder.
+# Does NOT touch the existing podcast files. Fill the 3 env values below to match this repo's Pages setup.
+name: quran-hizb
+on: workflow_dispatch
+permissions:
+  contents: write
+concurrency:
+  group: quran-hizb
+env:
+  # This repo's Pages site is deployed from an Actions artifact by podcast.yml (each deploy replaces the
+  # whole site), so files committed to a branch are not served by Pages. The feeds are committed to
+  # main under ./quran and served from raw.githubusercontent.com instead.
+  PAGES_BRANCH: main
+  PAGES_DIR: .
+  PAGES_URL: https://raw.githubusercontent.com/Faisal9909/listen-podcast/main/quran/
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PAGES_BRANCH }}
+      - name: ffmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      - name: build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/qh && cd /tmp/qh
+          cat > build.py <<'PYEOF'
+          # Builds 60 hizb episodes per reciter from mp3quran surah files + ayah timings,
+          # uploads them as GitHub Release assets, and writes podcast RSS feeds into ./site
+          # DRY=1 -> only print the cut plan (no audio download, no ffmpeg).
+          import json, os, sys, subprocess, urllib.request, time, html
+          from email.utils import formatdate
+
+          RECITERS = {
+              "shuraim": {"read": 31, "name": "سعود الشريم",
+                          "folder": "https://cdn.mp3quran.net/audio/saud-shuraim/r1/"},
+              "sudais": {"read": 54, "name": "عبدالرحمن السديس",
+                         "folder": "https://cdn.mp3quran.net/audio/abdulrahman-sudais/r1/"},
+          }
+          DRY = os.environ.get("DRY") == "1"
+          ONLY = [x for x in os.environ.get("ONLY", "").split(",") if x]
+          UA = {"User-Agent": "quran-hizb-podcast/1.0"}
+
+
+          def get(url, tries=5):
+              for i in range(tries):
+                  try:
+                      with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=120) as r:
+                          return r.read()
+                  except Exception as e:
+                      if i == tries - 1:
+                          raise
+                      time.sleep(3 * (i + 1))
+
+
+          def get_json(url):
+              return json.loads(get(url).decode("utf-8"))
+
+
+          def run(cmd):
+              subprocess.run(cmd, check=True)
+
+
+          meta = get_json("https://api.alquran.cloud/v1/meta")["data"]
+          NAY = {s["number"]: s["numberOfAyahs"] for s in meta["surahs"]["references"]}
+          SNAME = {s["number"]: s["name"].replace("سُورَةُ", "").strip() for s in meta["surahs"]["references"]}
+          QS = meta["hizbQuarters"]["references"]
+          ORDER = [(s, a) for s in range(1, 115) for a in range(1, NAY[s] + 1)]
+          IDX = {k: i for i, k in enumerate(ORDER)}
+          BOUNDS = [IDX[(QS[4 * i]["surah"], QS[4 * i]["ayah"])] for i in range(60)] + [len(ORDER)]
+
+
+          def timings(read):
+              T = {}
+              for s in range(1, 115):
+                  for a in get_json(f"https://mp3quran.net/api/v3/ayat_timing?surah={s}&read={read}"):
+                      if a["ayah"] >= 1:
+                          T[(s, a["ayah"])] = (a["start_time"] / 1000, a["end_time"] / 1000)
+              return T
+
+
+          def ayah_start(T, k):
+              """Cut point at the start of ayah k (k is never ayah 1 here)."""
+              if k in T:
+                  return T[k][0]
+              prev = (k[0], k[1] - 1)
+              return T[prev][1]
+
+
+          def plan(T):
+              hizbs = []
+              for h in range(60):
+                  first, last = ORDER[BOUNDS[h]], ORDER[BOUNDS[h + 1] - 1]
+                  segs = []
+                  for s in range(first[0], last[0] + 1):
+                      a0 = first[1] if s == first[0] else 1
+                      a1 = last[1] if s == last[0] else NAY[s]
+                      start = 0.0 if a0 == 1 else ayah_start(T, (s, a0))
+                      end = None if a1 == NAY[s] else ayah_start(T, (s, a1 + 1))
+                      segs.append((s, start, end))
+                  title = f"الحزب {h + 1}: {SNAME[first[0]]} {first[1]} إلى {SNAME[last[0]]} {last[1]}"
+                  hizbs.append({"n": h + 1, "title": title, "segs": segs})
+              return hizbs
+
+
+          def build(key, rc, hizbs):
+              src, out = f"work/{key}/src", f"work/{key}/out"
+              os.makedirs(src, exist_ok=True); os.makedirs(out, exist_ok=True)
+              for s in range(1, 115):
+                  p = f"{src}/{s:03d}.mp3"
+                  if not os.path.exists(p):
+                      data = get(f"{rc['folder']}{s:03d}.mp3")
+                      open(p, "wb").write(data)
+              eps = []
+              for hz in hizbs:
+                  parts = []
+                  for i, (s, st, en) in enumerate(hz["segs"]):
+                      seg = f"{out}/tmp_{hz['n']:02d}_{i}.mp3"
+                      cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", f"{src}/{s:03d}.mp3",
+                             "-ss", f"{st:.3f}"] + (["-to", f"{en:.3f}"] if en is not None else []) + \
+                            ["-map", "0:a", "-c", "copy", seg]
+                      run(cmd)
+                      parts.append(seg)
+                  lst = f"{out}/list_{hz['n']:02d}.txt"
+                  open(lst, "w").write("".join(f"file '{os.path.abspath(p)}'\n" for p in parts))
+                  fn = f"{key}-hizb-{hz['n']:02d}.mp3"
+                  run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", lst,
+                       "-map", "0:a", "-c", "copy", "-id3v2_version", "3",
+                       "-metadata", f"title={hz['title']}", "-metadata", f"artist={rc['name']}",
+                       "-metadata", f"track={hz['n']}", f"{out}/{fn}"])
+                  for p in parts + [lst]:
+                      os.remove(p)
+                  dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                              "-of", "csv=p=0", f"{out}/{fn}"],
+                                             capture_output=True, text=True, check=True).stdout.strip())
+                  eps.append({**hz, "file": fn, "size": os.path.getsize(f"{out}/{fn}"), "dur": int(round(dur))})
+                  print(f"{key} hizb {hz['n']:02d}: {dur / 60:.1f} min", flush=True)
+              # upload to a release named after the reciter
+              tag = key
+              if subprocess.run(["gh", "release", "view", tag], capture_output=True).returncode != 0:
+                  run(["gh", "release", "create", tag, "--title", rc["name"], "--notes", "حلقات الأحزاب"])
+              files = [f"{out}/{e['file']}" for e in eps]
+              for i in range(0, len(files), 20):
+                  run(["gh", "release", "upload", tag, "--clobber"] + files[i:i + 20])
+              return eps
+
+
+          def feed(key, rc, eps, repo, pages):
+              x = html.escape
+              items = []
+              for e in eps:
+                  url = f"https://github.com/{repo}/releases/download/{key}/{e['file']}"
+                  pub = formatdate(1767225600 + e["n"] * 3600, usegmt=True)  # 2026-01-01 + n hours
+                  items.append(f"""<item><title>{x(e['title'])}</title>
+          <enclosure url="{url}" length="{e['size']}" type="audio/mpeg"/>
+          <guid isPermaLink="false">{key}-hizb-{e['n']:02d}</guid><pubDate>{pub}</pubDate>
+          <itunes:episode>{e['n']}</itunes:episode><itunes:episodeType>full</itunes:episodeType>
+          <itunes:duration>{e['dur']}</itunes:duration></item>""")
+              title = f"القرآن الكريم بالأحزاب: {rc['name']}"
+              return f"""<?xml version="1.0" encoding="UTF-8"?>
+          <rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+          <channel><title>{x(title)}</title><link>{pages}</link><language>ar</language>
+          <description>{x(title)}: ستون حلقة، حلقة لكل حزب. المصدر: mp3quran.net</description>
+          <itunes:author>{x(rc['name'])}</itunes:author><itunes:type>serial</itunes:type>
+          <itunes:category text="Religion &amp; Spirituality"><itunes:category text="Islam"/></itunes:category>
+          <itunes:explicit>false</itunes:explicit><itunes:block>Yes</itunes:block>
+          {chr(10).join(items)}
+          </channel></rss>
+          """
+
+
+          def main():
+              repo = os.environ.get("GITHUB_REPOSITORY", "OWNER/REPO")
+              owner, name = repo.split("/")
+              pages = os.environ.get("PAGES_URL") or f"https://{owner.lower()}.github.io/{name}/"
+              os.makedirs("site", exist_ok=True)
+              links = []
+              for key, rc in RECITERS.items():
+                  if ONLY and key not in ONLY:
+                      continue
+                  hizbs = plan(timings(rc["read"]))
+                  if DRY:
+                      for hz in hizbs:
+                          print(key, hz["n"], hz["title"], [(s, round(a, 2), None if b is None else round(b, 2)) for s, a, b in hz["segs"]])
+                      continue
+                  eps = build(key, rc, hizbs)
+                  open(f"site/{key}.xml", "w", encoding="utf-8").write(feed(key, rc, eps, repo, pages))
+                  links.append((rc["name"], f"{pages}{key}.xml"))
+              if not DRY:
+                  open("site/index.html", "w", encoding="utf-8").write(
+                      "<meta charset='utf-8'><ul dir='rtl'>" +
+                      "".join(f"<li>{x}: <a href='{u}'>{u}</a></li>" for x, u in links) + "</ul>")
+                  for x, u in links:
+                      print("FEED", x, u)
+
+
+          main()
+          PYEOF
+          python3 build.py
+      - name: commit feeds
+        run: |
+          mkdir -p "$PAGES_DIR/quran"
+          cp /tmp/qh/site/* "$PAGES_DIR/quran/"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$PAGES_DIR/quran"
+          git commit -m "Add Quran hizb feeds (Shuraim, Sudais)"
+          for i in 1 2 3 4 5; do git pull --rebase origin "$PAGES_BRANCH" && git push origin "HEAD:$PAGES_BRANCH" && break; sleep 10; done
