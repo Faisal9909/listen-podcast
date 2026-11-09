@@ -1,0 +1,66 @@
+# Copies the Quran hizb episodes from GitHub Releases to the quran-audio branch, so feeds can link
+# straight to .mp3 files on raw.githubusercontent.com. Release downloads redirect to an extension-less
+# URL served as application/octet-stream, which Apple Podcasts refuses to play.
+name: quran-audio
+on: workflow_dispatch
+permissions:
+  contents: write
+concurrency:
+  group: quran-hizb
+jobs:
+  move:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RAW: https://raw.githubusercontent.com/${{ github.repository }}/quran-audio
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      - name: Download, re-encode to 64 kbps mono, commit to the quran-audio branch
+        run: |
+          set -e
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mkdir -p /tmp/audio && cd /tmp/audio
+          git init -q -b quran-audio
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git"
+          for key in shuraim sudais; do
+            mkdir -p "/tmp/src/$key" "$key"
+            gh release download "$key" -p '*.mp3' -D "/tmp/src/$key" --clobber
+            for f in /tmp/src/$key/*.mp3; do
+              ffmpeg -nostdin -y -hide_banner -loglevel error -i "$f" -map 0:a -ac 1 -ar 32000 -b:a 64k \
+                -id3v2_version 3 "$key/$(basename "$f")"
+            done
+            rm -rf "/tmp/src/$key"
+            git add "$key"
+            git commit -q -m "Quran hizb audio: $key (64 kbps mono)"
+            # one push per reciter keeps each push well under GitHub's size limit
+            for i in 1 2 3; do git push -q -f origin HEAD:quran-audio && break; sleep 15; done
+          done
+          du -sh shuraim sudais
+      - name: Point the feeds at the new files
+        run: |
+          python3 - <<'EOF'
+          import os, re
+          raw = os.environ["RAW"]
+          for key in ["shuraim", "sudais"]:
+              p = f"quran/{key}.xml"
+              s = open(p, encoding="utf-8").read()
+              def fix(m):
+                  name = m.group(1)
+                  size = os.path.getsize(f"/tmp/audio/{key}/{name}")
+                  return f'<enclosure url="{raw}/{key}/{name}" length="{size}" type="audio/mpeg"/>'
+              s, n = re.subn(r'<enclosure url="[^"]*/([^"/]+\.mp3)" length="\d+" type="audio/mpeg"/>', fix, s)
+              assert n == 60, (key, n)
+              open(p, "w", encoding="utf-8").write(s)
+              print(key, n, "enclosures updated")
+          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add quran/*.xml
+          git commit -m "Quran feeds: play audio from the quran-audio branch"
+          for i in 1 2 3 4 5; do git pull -q --rebase origin main && git push -q origin HEAD:main && break; sleep 10; done
