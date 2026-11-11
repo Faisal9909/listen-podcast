@@ -35,6 +35,10 @@ from TTS.tts.models.xtts import Xtts  # noqa: E402
 
 LIMIT = 150  # characters, diacritics included; XTTS's hard limit for Arabic is 166
 RATE = 24000
+# XTTS on CPU grows by roughly 90 MB per piece and never gives it back, so a long episode runs a
+# 16 GB machine out of memory. The process makes at most this many new pieces, then exits with
+# code 3; the caller starts it again and it resumes from the pieces already on disk.
+BATCH = int(os.environ.get("FASIH_BATCH", "40"))
 PAUSE = {"mid": 0.03, "comma": 0.16, "sentence": 0.38, "paragraph": 0.75}
 SENTENCE_END = re.compile(r"(?<=[.؟!؛:])\s+")
 FINAL_PUNCT = re.compile(r"[.؟!؛:،]$")
@@ -127,13 +131,17 @@ def main():
     # every piece is kept on disk as it is made, so a run that gets killed resumes where it stopped
     parts_dir = OUT + ".parts"
     os.makedirs(parts_dir, exist_ok=True)
-    audio, start = [], time.time()
+    audio, start, made = [], time.time(), 0
     with torch.inference_mode():
         for n, (piece, boundary) in enumerate(plan, 1):
             saved = os.path.join(parts_dir, f"{n:04d}.npy")
             if os.path.exists(saved):
                 wav = np.load(saved)
+            elif made >= BATCH:
+                print(f"{n - 1}/{len(plan)} pieces done, restarting to free memory", flush=True)
+                sys.exit(3)
             else:
+                made += 1
                 out = model.inference(piece, "ar", cond, speaker, temperature=0.65, repetition_penalty=2.0,
                                       enable_text_splitting=False)
                 wav = trim(np.asarray(out["wav"], np.float32))

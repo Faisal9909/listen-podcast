@@ -65,7 +65,13 @@ jobs:
         env:
           COQUI_TOS_AGREED: "1"
         run: |
-          python fasih/synth.py "$PWD/fasih-repo" "$PWD/weights" "$PWD/${{ inputs.folder }}/${{ matrix.name }}.txt" "$PWD/out.wav"
+          # synth.py exits with 3 every few dozen pieces to free memory; run it again until it finishes
+          while true; do
+            rc=0
+            python fasih/synth.py "$PWD/fasih-repo" "$PWD/weights" "$PWD/${{ inputs.folder }}/${{ matrix.name }}.txt" "$PWD/out.wav" || rc=$?
+            [ "$rc" = 3 ] || break
+          done
+          [ "$rc" = 0 ]
           ffmpeg -v error -y -i out.wav -ac 1 -ar 24000 -b:a 32k "${{ matrix.name }}.mp3"
       - uses: actions/upload-artifact@v4
         with:
