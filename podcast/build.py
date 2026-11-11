@@ -554,6 +554,31 @@ def load_published(base_url):
     return json.loads(data) if data else []
 
 
+INCOMING_DIR = HERE.parent / "incoming"
+
+
+def incoming_audio():
+    """Episodes voiced outside this script (e.g. by fasih-book.yml): incoming/<name>.mp3 + .json.
+
+    The JSON holds title, text and date; the episode id comes from the file name, so each file is
+    published once and then ignored like any other known episode.
+    """
+    found = []
+    for meta in sorted(INCOMING_DIR.glob("*.json")):
+        mp3 = meta.with_suffix(".mp3")
+        if not mp3.exists():
+            continue
+        data = json.loads(meta.read_text(encoding="utf-8"))
+        found.append({
+            "id": "imp-" + hashlib.sha1(meta.stem.encode()).hexdigest()[:16],
+            "title": data["title"],
+            "text": data.get("text", ""),
+            "date": data["date"],
+            "audio": str(mp3),
+        })
+    return found
+
+
 def topic_slug(topic):
     return hashlib.sha1(topic.encode()).hexdigest()[:10]
 
@@ -784,7 +809,7 @@ def main():
     known = {ep["id"] for ep in published} | set(removed)
     log(f"Published episodes: {len(published)}, removed now: {len(dropped)}")
 
-    candidates = fetch_messages()
+    candidates = fetch_messages() + incoming_audio()
     test_text = os.environ.get("TEST_TEXT", "").strip()
     title = os.environ.get("EPISODE_TITLE", "").strip()
     if test_text and title:
@@ -815,8 +840,8 @@ def main():
     # Publish a few at a time so the first episodes appear quickly; the workflow
     # starts another run while more are waiting.
     # Test samples are not stored anywhere else, so they always go in this run.
-    tests = [m for m in new if m["id"].startswith(("test-", "text-"))]
-    emails = [m for m in new if not m["id"].startswith(("test-", "text-"))]
+    tests = [m for m in new if m["id"].startswith(("test-", "text-", "imp-"))]
+    emails = [m for m in new if not m["id"].startswith(("test-", "text-", "imp-"))]
     waiting = len(emails) - MAX_NEW_PER_RUN
     new = tests + emails[:MAX_NEW_PER_RUN]
     log(f"New episodes this run: {len(new)}, still waiting: {max(0, waiting)}")
@@ -835,6 +860,11 @@ def main():
     for msg in new:
         mp3 = ep_dir / f"{msg['id']}.mp3"
         spoken = f"{msg['title']}.\n\n{msg['text']}"
+        if msg.get("audio"):  # already voiced elsewhere (see incoming_audio)
+            shutil.copyfile(msg.pop("audio"), mp3)
+            shrink(mp3)
+            created.append({**msg, "bytes": mp3.stat().st_size, "duration": mp3_seconds(mp3)})
+            continue
         try:
             voice = msg.pop("voice", None) or (VOICE_AR if is_arabic(msg["text"]) else VOICE_EN)
             synthesize(spoken, mp3, voice)

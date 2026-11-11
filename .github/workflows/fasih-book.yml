@@ -1,0 +1,118 @@
+# Voices prepared, diacritized texts with Fasih-TTS-V1 (one runner per episode, all in parallel)
+# and hands the MP3s to the podcast through incoming/, which podcast/build.py publishes.
+name: fasih-book
+on:
+  workflow_dispatch:
+    inputs:
+      folder:
+        description: "Folder with <name>.txt (text to read) and <name>.json (episode title)"
+        default: fasih/maqasid
+      names:
+        description: "Comma-separated names to voice, e.g. ep09,ep10"
+        required: true
+      prefix:
+        description: "Prefix for the files in incoming/ (keeps names unique across books)"
+        default: maqasid-fasih
+      remove:
+        description: "Passed to the podcast run: remove episodes whose title contains this (optional)"
+        required: false
+permissions:
+  contents: write
+  actions: write
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      names: ${{ steps.p.outputs.names }}
+    steps:
+      - id: p
+        run: echo "names=$(python3 -c 'import json,sys; print(json.dumps([n.strip() for n in sys.argv[1].split(",") if n.strip()]))' '${{ inputs.names }}')" >> "$GITHUB_OUTPUT"
+
+  voice:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        name: ${{ fromJSON(needs.plan.outputs.names) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: fasih/fasih-requirements.txt
+      - name: Install (CPU)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          pip install -q torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+          pip install -q -r fasih/fasih-requirements.txt
+          git clone -q https://github.com/NightPrinceY/Fasih-TTS-V1 fasih-repo
+          git -C fasih-repo checkout -q c0cb81b7b2f24de008938d0639ee74248297e5bc
+      - uses: actions/cache@v4
+        with:
+          path: weights
+          key: fasih-tts-v1-weights
+      - name: Download weights
+        run: |
+          python - <<'EOF'
+          from huggingface_hub import hf_hub_download
+          for f in ["config.json", "model.pth", "speaker_latents.pt", "vocab.json"]:
+              hf_hub_download("NightPrince/Fasih-TTS-V1", f, local_dir="weights")
+          EOF
+      - name: Voice ${{ matrix.name }}
+        env:
+          COQUI_TOS_AGREED: "1"
+        run: |
+          python fasih/synth.py "$PWD/fasih-repo" "$PWD/weights" "$PWD/${{ inputs.folder }}/${{ matrix.name }}.txt" "$PWD/out.wav"
+          ffmpeg -v error -y -i out.wav -ac 1 -ar 24000 -b:a 32k "${{ matrix.name }}.mp3"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.name }}.mp3
+
+  publish:
+    needs: voice
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: voiced
+      - name: Add the voiced episodes to incoming/
+        env:
+          FOLDER: ${{ inputs.folder }}
+          PREFIX: ${{ inputs.prefix }}
+          NAMES: ${{ inputs.names }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, shutil
+          from datetime import datetime, timedelta, timezone
+          folder, prefix = os.environ["FOLDER"], os.environ["PREFIX"]
+          names = [n.strip() for n in os.environ["NAMES"].split(",") if n.strip()]
+          os.makedirs("incoming", exist_ok=True)
+          now = datetime.now(timezone.utc)
+          for i, name in enumerate(names):
+              mp3 = f"voiced/{name}/{name}.mp3"
+              if not os.path.exists(mp3):
+                  print(f"MISSING {name}")
+                  continue
+              meta = json.load(open(f"{folder}/{name}.json", encoding="utf-8"))
+              text = open(f"{folder}/{name}.txt", encoding="utf-8").read().split("\n", 2)[-1].strip()
+              shutil.copyfile(mp3, f"incoming/{prefix}-{name}.mp3")
+              # dates a second apart keep the episodes in order
+              meta.update(text=text, date=(now + timedelta(seconds=i)).isoformat())
+              json.dump(meta, open(f"incoming/{prefix}-{name}.json", "w", encoding="utf-8"), ensure_ascii=False)
+              print(f"ADDED {name}")
+          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add incoming
+          git commit -m "Voiced with Fasih: ${{ inputs.names }}" || exit 0
+          for i in 1 2 3 4 5; do git pull -q --rebase origin main && git push -q origin HEAD:main && break; sleep 10; done
+      - name: Publish through the podcast
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run podcast.yml -R "${{ github.repository }}" --ref main -f remove="${{ inputs.remove }}"
