@@ -22,7 +22,8 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
           pip install -q torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cpu
-          pip install -q coqui-tts==0.28.0 transformers==4.57.6 numpy==1.26.4 soundfile pyyaml num2words huggingface_hub
+          # exact versions from a local run that worked (torch is installed above from the CPU index)
+          pip install -q -r tts-test/fasih-requirements.txt huggingface_hub
           git clone -q https://github.com/NightPrinceY/Fasih-TTS-V1 fasih
           git -C fasih checkout -q c0cb81b7b2f24de008938d0639ee74248297e5bc
           nproc
