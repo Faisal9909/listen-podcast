@@ -16,6 +16,7 @@ joined. How it is cut decides how the reading sounds:
 """
 import os
 import re
+import resource
 import sys
 import time
 
@@ -123,15 +124,26 @@ def main():
     latents = torch.load(f"{WEIGHTS}/speaker_latents.pt", map_location="cpu")
     cond, speaker = latents["gpt_cond_latent"], latents["speaker_embedding"]
 
+    # every piece is kept on disk as it is made, so a run that gets killed resumes where it stopped
+    parts_dir = OUT + ".parts"
+    os.makedirs(parts_dir, exist_ok=True)
     audio, start = [], time.time()
     with torch.inference_mode():
         for n, (piece, boundary) in enumerate(plan, 1):
-            out = model.inference(piece, "ar", cond, speaker, temperature=0.65, repetition_penalty=2.0,
-                                  enable_text_splitting=False)
-            audio.append(trim(np.asarray(out["wav"], np.float32)))
+            saved = os.path.join(parts_dir, f"{n:04d}.npy")
+            if os.path.exists(saved):
+                wav = np.load(saved)
+            else:
+                out = model.inference(piece, "ar", cond, speaker, temperature=0.65, repetition_penalty=2.0,
+                                      enable_text_splitting=False)
+                wav = trim(np.asarray(out["wav"], np.float32))
+                np.save(saved + ".tmp.npy", wav)
+                os.replace(saved + ".tmp.npy", saved)
+            audio.append(wav)
             audio.append(np.zeros(int(RATE * PAUSE[boundary]), np.float32))
             if n % 10 == 0 or n == len(plan):
-                print(f"{n}/{len(plan)} pieces, {(time.time() - start) / 60:.1f} min", flush=True)
+                rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024
+                print(f"{n}/{len(plan)} pieces, {(time.time() - start) / 60:.1f} min, peak {rss} MB", flush=True)
     wav = np.concatenate(audio)
     spent = time.time() - start
     print(f"RESULT: {len(wav) / RATE / 60:.1f} min of audio in {spent / 60:.1f} min", flush=True)
