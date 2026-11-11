@@ -1,0 +1,80 @@
+# One-off test: how long does Fasih-TTS-V1 (XTTS v2 fine-tune, MSA, CPU) take for a full episode
+# on a GitHub runner? The podcast pipeline is untouched; the result is uploaded as an artifact.
+name: fasih-test
+on:
+  workflow_dispatch:
+    inputs:
+      text_file:
+        description: "Text file in the repo to read"
+        default: tts-test/maqasid-ep01.txt
+permissions:
+  contents: read
+jobs:
+  synth:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (CPU)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          pip install -q torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+          pip install -q coqui-tts==0.28.0 transformers==4.57.6 numpy==1.26.4 soundfile pyyaml num2words huggingface_hub
+          git clone -q https://github.com/NightPrinceY/Fasih-TTS-V1 fasih
+          git -C fasih checkout -q c0cb81b7b2f24de008938d0639ee74248297e5bc
+          nproc
+      - name: Download weights
+        run: |
+          python - <<'EOF'
+          from huggingface_hub import hf_hub_download
+          for f in ["config.json", "model.pth", "speaker_latents.pt", "vocab.json"]:
+              hf_hub_download("NightPrince/Fasih-TTS-V1", f, local_dir="weights")
+          EOF
+      - name: Synthesize
+        env:
+          COQUI_TOS_AGREED: "1"
+          TEXT_FILE: ${{ inputs.text_file }}
+        run: |
+          cd fasih
+          python - <<'EOF'
+          import os, sys, time
+          import numpy as np, torch, soundfile as sf
+          torch.set_num_threads(os.cpu_count())
+          sys.path.insert(0, "src")
+          from tts.text.pipeline import TextPipeline
+          from TTS.tts.configs.xtts_config import XttsConfig
+          from TTS.tts.models.xtts import Xtts
+          W = "../weights"
+          text = open("../" + os.environ["TEXT_FILE"], encoding="utf-8").read().strip()
+          chunks = TextPipeline(diacritizer=None).prepare_chunks(text)
+          print(f"{len(text)} chars, {len(chunks)} chunks, {os.cpu_count()} cpus", flush=True)
+          cfg = XttsConfig(); cfg.load_json(f"{W}/config.json")
+          m = Xtts.init_from_config(cfg)
+          m.load_checkpoint(cfg, checkpoint_path=f"{W}/model.pth", vocab_path=f"{W}/vocab.json", use_deepspeed=False)
+          m.eval()
+          lat = torch.load(f"{W}/speaker_latents.pt", map_location="cpu")
+          g, s = lat["gpt_cond_latent"], lat["speaker_embedding"]
+          gap = np.zeros(int(24000 * 0.12), np.float32)
+          pieces, t0 = [], time.time()
+          with torch.inference_mode():
+              for i, c in enumerate(chunks):
+                  tc = time.time()
+                  out = m.inference(c, "ar", g, s, temperature=0.65, repetition_penalty=2.0, enable_text_splitting=False)
+                  w = np.asarray(out["wav"], np.float32)
+                  pieces += ([gap] if pieces else []) + [w]
+                  done = time.time() - t0
+                  print(f"chunk {i + 1}/{len(chunks)}: {len(w) / 24000:.1f}s audio in {time.time() - tc:.1f}s "
+                        f"(total {done / 60:.1f} min)", flush=True)
+          wav = np.concatenate(pieces)
+          gen = time.time() - t0
+          print(f"RESULT: {len(wav) / 24000 / 60:.1f} min of audio in {gen / 60:.1f} min, RTF {gen / (len(wav) / 24000):.2f}")
+          sf.write("../out.wav", wav, 24000)
+          EOF
+          cd .. && ffmpeg -v error -y -i out.wav -ac 1 -b:a 64k fasih-episode.mp3 && ls -la fasih-episode.mp3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fasih-episode
+          path: fasih-episode.mp3
