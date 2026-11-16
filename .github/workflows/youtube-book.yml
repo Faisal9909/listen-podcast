@@ -1,0 +1,86 @@
+# Cuts a YouTube audiobook into one episode per chapter and hands them to the podcast through
+# incoming/, which podcast/build.py publishes. The chapter list is a file in the repo:
+# "H:MM:SS name" per line; each episode runs to the next chapter, the last one to the end.
+name: youtube-book
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "YouTube video URL"
+        required: true
+      chapters:
+        description: "Chapter list file in the repo"
+        required: true
+      title:
+        description: "Episode title prefix; the podcast channel is the text before ' — '"
+        required: true
+      prefix:
+        description: "Prefix for the files in incoming/ (keeps names unique across books)"
+        required: true
+permissions:
+  contents: write
+  actions: write
+jobs:
+  cut:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Install
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          pip install -q -U "yt-dlp[default]"
+      - name: Download the audio
+        env:
+          URL: ${{ inputs.url }}
+        run: |
+          for i in 1 2 3; do
+            yt-dlp --no-playlist -f "bestaudio" -o "src.%(ext)s" "$URL" && break
+            sleep 30
+          done
+          ls -la src.*
+      - name: Cut the chapters into incoming/
+        env:
+          CHAPTERS: ${{ inputs.chapters }}
+          TITLE: ${{ inputs.title }}
+          PREFIX: ${{ inputs.prefix }}
+        run: |
+          python3 - <<'PY'
+          import glob, json, os, subprocess
+          from datetime import datetime, timedelta, timezone
+          src = glob.glob("src.*")[0]
+          total = float(subprocess.check_output(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                                 "-of", "csv=p=0", src]).decode())
+          chapters = []
+          for line in open(os.environ["CHAPTERS"], encoding="utf-8"):
+              if line.strip():
+                  stamp, name = line.strip().split(" ", 1)
+                  h, m, s = ([0, 0] + [int(x) for x in stamp.split(":")])[-3:]
+                  chapters.append((h * 3600 + m * 60 + s, name.strip()))
+          os.makedirs("incoming", exist_ok=True)
+          now = datetime.now(timezone.utc)
+          for n, (start, name) in enumerate(chapters, 1):
+              end = chapters[n][0] if n < len(chapters) else total
+              base = f"incoming/{os.environ['PREFIX']}-{n:02d}"
+              subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-ss", str(start), "-to", str(end), "-i", src,
+                              "-map", "0:a", "-ac", "1", "-ar", "24000", "-b:a", "32k", base + ".mp3"], check=True)
+              # dates a second apart keep the episodes in order
+              meta = {"title": f"{os.environ['TITLE']}: {name}", "text": name,
+                      "date": (now + timedelta(seconds=n)).isoformat()}
+              json.dump(meta, open(base + ".json", "w", encoding="utf-8"), ensure_ascii=False)
+              print(f"{n:02d} {(end - start) / 60:5.1f} min  {name}", flush=True)
+          PY
+          du -sh incoming
+      - name: Commit and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add incoming
+          git commit -q -m "Audiobook chapters: ${{ inputs.title }}"
+          for i in 1 2 3 4 5; do git pull -q --rebase origin main && git push -q origin HEAD:main && break; sleep 10; done
+          gh workflow run podcast.yml -R "${{ github.repository }}" --ref main
