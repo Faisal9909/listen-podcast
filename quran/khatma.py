@@ -1,12 +1,13 @@
-"""Builds two feeds for one reciter from quran/<key>.xml:
+"""Reading and review feeds for one reciter.
 
-  <key>-read.xml    reading, first hizb to last. Each khatma gets fresh episode ids, so starting a new
-                    khatma makes all 60 episodes new and unplayed in Apple Podcasts.
+  <key>.xml         the reading feed people already follow, first hizb to last. "new" gives its 60
+                    episodes fresh ids (and the khatma number), so Apple Podcasts shows them all as
+                    new and unplayed and the listener starts again from the first hizb.
   <key>-review.xml  review: the last hizbs only (REVIEW_FROM to 60); a separate show, so reviewing
                     never moves the reading position.
 
-usage: python quran/khatma.py <key>          rebuild both feeds for the current khatma
-       python quran/khatma.py <key> new      start the next khatma
+usage: python quran/khatma.py <key>          rebuild the review feed
+       python quran/khatma.py <key> new      start the next khatma in the reading feed
 """
 import json
 import re
@@ -56,15 +57,18 @@ def main():
 
     numbered = list(enumerate(items, 1))
     k = entry["khatma"]
-    (HERE / f"{key}-read.xml").write_text(feed(
-        f"{name} — القراءة",
-        f"القرآن الكريم بالأحزاب بصوت {name}، للقراءة من الحزب الأول إلى الستين. {ordinal(k)}.",
-        numbered, f"{key}-k{k}-hizb"), encoding="utf-8")
+    if sys.argv[2:] == ["new"]:
+        # the reading feed keeps its title and description; only the ids, dates and khatma change
+        top = re.sub(r"<description>[^<]*</description>",
+                     f"<description>القرآن الكريم بالأحزاب بصوت {name}: ستون حلقة، حلقة لكل حزب. {ordinal(k)}. "
+                     "المصدر: mp3quran.net</description>", head, count=1)
+        body = feed(name, "", numbered, f"{key}-k{k}-hizb").split("<item>", 1)[1]
+        (HERE / f"{key}.xml").write_text(top + "<item>" + body, encoding="utf-8")
     (HERE / f"{key}-review.xml").write_text(feed(
         f"{name} — المراجعة",
         f"مراجعة الأحزاب من {REVIEW_FROM} إلى 60 بصوت {name}.",
         numbered[REVIEW_FROM - 1:], f"{key}-review-hizb"), encoding="utf-8")
-    print(f"{key}: {ordinal(k)}, read 60 episodes, review {61 - REVIEW_FROM} episodes")
+    print(f"{key}: {ordinal(k)}, review {61 - REVIEW_FROM} episodes")
 
 
 main()
